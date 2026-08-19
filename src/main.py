@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.routes import router as api_router
 from src.api.websocket import router as ws_router
+from src.observability import configure_observability, metrics
 from src.queueing import RunWorker, cancel_task, get_run_queue
 from src.storage import get_run_store
 from src.workspace import get_workspace_store
@@ -27,6 +28,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="AI Agent Platform", version="0.2.0", lifespan=lifespan)
+configure_observability(app)
 
 app.add_middleware(
     CORSMiddleware,
@@ -38,6 +40,11 @@ app.add_middleware(
 
 app.include_router(api_router)
 app.include_router(ws_router)
+
+@app.get("/v1/metrics")
+async def get_metrics():
+    return metrics.snapshot()
+
 
 @app.get("/")
 async def root():

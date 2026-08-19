@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 
 from src.events import get_event_broker
+from src.observability import metrics
 from src.orchestrator.graph import run_agent
 from src.queueing.run_queue import RunJob, RunQueue
 from src.storage import SQLiteRunStore
@@ -33,12 +34,14 @@ class RunWorker:
             status = str(state.get("status") or "failed")
             answer = str(state.get("review", {}).get("comment", ""))
             await self.store.complete_run(job.run_id, status, answer, state.get("plan"))
+            metrics.record_run(status)
             await self._persist_and_notify(
                 job.run_id,
                 {"type": "run.completed", "payload": {"status": status, "review": state.get("review", {})}},
             )
         except Exception:
             await self.store.complete_run(job.run_id, "failed", "", None)
+            metrics.record_run("failed")
             await self._persist_and_notify(
                 job.run_id,
                 {"type": "run.failed", "payload": {"message": "The agent run could not be completed."}},

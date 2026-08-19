@@ -16,6 +16,7 @@ from src.policy import ApprovalDecisionRequest, ApprovalMode, ToolCallRequest, T
 from src.queueing import RunJob, RunWorker, get_run_queue
 from src.storage import get_run_store
 from src.tools.gateway import ToolGateway
+from src.tools.serena import SerenaClient
 from src.workspace import (
     ModuleCreateRequest,
     NoteCreateRequest,
@@ -85,6 +86,17 @@ def public_plan(plan_payload: dict | None, task: str) -> PublicAgentPlan:
 @router.get("/healthz")
 async def healthz():
     return {"status": "ok"}
+
+
+@router.get("/serena/status")
+async def serena_status():
+    client = SerenaClient()
+    return {
+        "available": client.available,
+        "mode": "read_only",
+        "tools": ["get_symbols_overview", "find_symbol", "find_referencing_symbols"],
+        "reason": None if client.available else "Enable the Serena MCP provider to activate semantic code queries.",
+    }
 
 
 def workspace_store():

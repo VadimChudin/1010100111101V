@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     workspace_root: str = "/workspace"
     max_tool_output_chars: int = 12000
     enable_unsafe_shell: bool = False
+    sentry_dsn: str = ""
+    observability_enabled: bool = True
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore", case_sensitive=False)
 
 @lru_cache
