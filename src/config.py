@@ -1,4 +1,5 @@
 from functools import lru_cache
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -13,6 +14,7 @@ class Settings(BaseSettings):
     neo4j_user: str = "neo4j"
     neo4j_password: str = "password"
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/agent"
+    state_database_path: str = "./data/agent-state.db"
     workspace_root: str = "/workspace"
     max_tool_output_chars: int = 12000
     enable_unsafe_shell: bool = False

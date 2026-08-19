@@ -1,9 +1,9 @@
 from __future__ import annotations
 from pathlib import Path
-from src.config import get_settings
+from src.config import Settings
 
 def safe_path(relative: str) -> Path:
-    root = Path(get_settings().workspace_root).resolve()
+    root = Path(Settings().workspace_root).resolve()
     target = (root / relative).resolve()
     if root != target and root not in target.parents:
         raise PermissionError("path escapes workspace")

@@ -97,3 +97,43 @@ async def test_chat_endpoint_returns_public_plan_object_without_commands(monkeyp
     assert payload["plan"]["steps"][0]["id"] == "step-1"
     assert "command" not in payload["plan"]["steps"][0]
     assert payload["events"] == [{"type": "plan.created"}]
+
+
+@pytest.mark.asyncio
+async def test_chat_run_is_durable_and_events_are_queryable(monkeypatch, tmp_path):
+    from src.api import routes
+    from src.storage.run_store import SQLiteRunStore
+
+    store = SQLiteRunStore(str(tmp_path / "runs.db"))
+
+    async def fake_run_agent(task: str, run_id: str, user_id: str):
+        return {
+            "status": "completed",
+            "review": {"comment": "Done"},
+            "plan": {
+                "goal": task,
+                "steps": [{"id": "step-1", "title": "Persist a run", "depends_on": []}],
+                "acceptance_criteria": ["The run remains queryable"],
+            },
+            "events": [
+                {"type": "run.started", "payload": {"run_id": run_id}},
+                {"type": "plan.created", "payload": {"goal": task}},
+                {"type": "review.updated", "payload": {"approved": True}},
+            ],
+        }
+
+    monkeypatch.setattr(routes, "get_run_store", lambda: store)
+    monkeypatch.setattr(routes, "run_agent", fake_run_agent)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/v1/chat", json={"message": "Persist this run"})
+        assert response.status_code == 200
+        run_id = response.json()["run_id"]
+
+        detail = await client.get(f"/v1/runs/{run_id}")
+        events = await client.get(f"/v1/runs/{run_id}/events?after_sequence=1")
+
+    assert detail.status_code == 200
+    assert detail.json()["task"] == "Persist this run"
+    assert [event["sequence"] for event in detail.json()["events"]] == [1, 2, 3]
+    assert [event["type"] for event in events.json()["events"]] == ["plan.created", "review.updated"]
