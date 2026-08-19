@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -5,13 +6,22 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.routes import router as api_router
 from src.api.websocket import router as ws_router
+from src.queueing import RunWorker, cancel_task, get_run_queue
 from src.storage import get_run_store
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    await get_run_store().initialize()
-    yield
+    store = get_run_store()
+    queue = get_run_queue()
+    await store.initialize()
+    await queue.initialize()
+    worker_task = asyncio.create_task(RunWorker(queue, store).serve(), name="agent-run-worker")
+    try:
+        yield
+    finally:
+        await cancel_task(worker_task)
+        await queue.close()
 
 
 app = FastAPI(title="AI Agent Platform", version="0.2.0", lifespan=lifespan)

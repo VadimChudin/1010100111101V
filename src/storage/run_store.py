@@ -141,6 +141,17 @@ class SQLiteRunStore:
         await self.initialize()
         return await asyncio.to_thread(self._append_events_sync, run_id, events)
 
+    def _set_status_sync(self, run_id: str, status: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE runs SET status = ?, updated_at = ? WHERE id = ?",
+                (status, utc_now(), run_id),
+            )
+
+    async def set_status(self, run_id: str, status: str) -> None:
+        await self.initialize()
+        await asyncio.to_thread(self._set_status_sync, run_id, status)
+
     def _complete_run_sync(self, run_id: str, status: str, answer: str, plan: dict[str, Any] | None) -> None:
         with self._connect() as connection:
             connection.execute(

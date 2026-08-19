@@ -1,4 +1,7 @@
 from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
+
 from .state import AgentState
 from .nodes import planner_node, executor_node, reviewer_node
 
@@ -21,8 +24,35 @@ def build_graph():
     graph.add_edge("reviewer", END)
     return graph.compile()
 
-async def run_agent(task: str, run_id: str, user_id: str = "anonymous") -> AgentState:
-    initial: AgentState = {"run_id": run_id, "user_id": user_id, "task": task, "messages": [], "events": [{"type": "run.started", "payload": {"run_id": run_id}}], "tool_results": [], "iteration": 0, "status": "queued"}
+async def run_agent(
+    task: str,
+    run_id: str,
+    user_id: str = "anonymous",
+    event_sink: Callable[[dict], Awaitable[None]] | None = None,
+) -> AgentState:
+    initial: AgentState = {
+        "run_id": run_id,
+        "user_id": user_id,
+        "task": task,
+        "messages": [],
+        "events": [{"type": "run.started", "payload": {"run_id": run_id}}],
+        "tool_results": [],
+        "iteration": 0,
+        "status": "queued",
+    }
+
+    if event_sink is not None:
+        # The explicit sequence makes each node's appended event observable as
+        # soon as that node completes. The normal invocation keeps LangGraph as
+        # the default execution engine for synchronous compatibility.
+        state = initial
+        for node in (planner_node, executor_node, reviewer_node):
+            prior_events = len(state.get("events", []))
+            state = {**state, **(await node(state))}
+            for event in state.get("events", [])[prior_events:]:
+                await event_sink(event)
+        return state
+
     app = build_graph()
     if app is not None:
         return await app.ainvoke(initial)

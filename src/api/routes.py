@@ -1,10 +1,18 @@
 from __future__ import annotations
+
+import asyncio
+import json
+from collections.abc import AsyncIterator
 from uuid import uuid4
-from fastapi import APIRouter, HTTPException
+
+from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from src.events import get_event_broker
 from src.orchestrator.graph import run_agent
 from src.orchestrator.schemas import AgentPlan
+from src.queueing import RunJob, get_run_queue
 from src.storage import get_run_store
 
 router = APIRouter(prefix="/v1")
@@ -86,7 +94,14 @@ async def chat(request: ChatRequest):
 @router.post("/runs")
 async def create_run(request: ChatRequest):
     run_id = str(uuid4())
-    await get_run_store().create_run(run_id, request.user_id, request.message)
+    store = get_run_store()
+    await store.create_run(run_id, request.user_id, request.message)
+    try:
+        await get_run_queue().enqueue(RunJob(run_id=run_id, user_id=request.user_id, task=request.message))
+    except Exception as exc:
+        await store.complete_run(run_id, "failed", "", None)
+        await store.append_events(run_id, [{"type": "run.failed", "payload": {"message": "The run could not be queued."}}])
+        raise HTTPException(status_code=503, detail="The run queue is unavailable.") from exc
     return {"run_id": run_id, "status": "queued", "task": request.message}
 
 
@@ -112,3 +127,48 @@ async def get_run_events(run_id: str, after_sequence: int = 0):
     if await get_run_store().get_run(run_id) is None:
         raise HTTPException(status_code=404, detail="Run not found")
     return {"events": await get_run_store().get_events(run_id, after_sequence)}
+
+
+@router.get("/runs/{run_id}/stream")
+async def stream_run_events(
+    request: Request,
+    run_id: str,
+    after_sequence: int = 0,
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+):
+    store = get_run_store()
+    if await store.get_run(run_id) is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    try:
+        cursor = max(after_sequence, int(last_event_id or "0"))
+    except ValueError:
+        cursor = after_sequence
+
+    async def event_stream() -> AsyncIterator[str]:
+        nonlocal cursor
+        broker = get_event_broker()
+        subscription = broker.subscribe(run_id)
+        try:
+            while not await request.is_disconnected():
+                events = await store.get_events(run_id, cursor)
+                for event in events:
+                    cursor = int(event["sequence"])
+                    yield f"id: {cursor}\\nevent: timeline\\ndata: {json.dumps(event, ensure_ascii=False)}\\n\\n"
+
+                current = await store.get_run(run_id)
+                if current is not None and current.status in {"completed", "failed", "needs_revision", "cancelled"}:
+                    return
+
+                try:
+                    await asyncio.wait_for(subscription.get(), timeout=15)
+                except TimeoutError:
+                    yield ": keep-alive\\n\\n"
+        finally:
+            broker.unsubscribe(run_id, subscription)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )

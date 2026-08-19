@@ -20,6 +20,7 @@ export interface AgentPlan {
 
 export interface AgentEvent {
   id?: string
+  sequence?: number
   type?: EventKind | string
   kind?: EventKind | string
   message?: string
@@ -30,6 +31,8 @@ export interface AgentEvent {
   status?: string
   timestamp?: string
   tool?: string
+  payload?: Record<string, unknown>
+  created_at?: string
 }
 
 export interface ChatMessage {
@@ -39,6 +42,12 @@ export interface ChatMessage {
   timestamp: string
   runId?: string
   stage?: AgentStage
+}
+
+export interface RunSubmission {
+  run_id: string
+  status: string
+  task: string
 }
 
 export interface ChatResponse {
