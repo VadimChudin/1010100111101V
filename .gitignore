@@ -10,3 +10,5 @@ workspace/
 !src/workspace/**
 *.log
 .DS_Store
+
+src/workspace/__pycache__/
