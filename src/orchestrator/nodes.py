@@ -30,8 +30,8 @@ async def planner_node(state: dict) -> dict:
     try:
         prompt = (
             "Составь краткий JSON-план задачи. Верни только JSON-объект с полями "
-            "goal, steps (массив объектов id,title,description,command,depends_on), "
-            "acceptance_criteria. Не выполняй команды.\nЗадача: "
+            "goal, steps (массив объектов id,title,description,depends_on), "
+            "acceptance_criteria. Не предлагай shell-команды: инструменты будут добавлены через policy layer.\nЗадача: "
             + state["task"]
         )
         result = await router.chat(
@@ -58,17 +58,20 @@ async def planner_node(state: dict) -> dict:
 async def executor_node(state: dict) -> dict:
     plan = AgentPlan.from_payload(state.get("plan") or {}, state["task"])
     results = list(state.get("tool_results", []))
+    policy_events: list[dict] = []
     settings = get_settings()
 
     for step in plan.steps:
         if not step.command:
             continue
         if not settings.enable_unsafe_shell:
-            results.append(
+            policy_events.append(
                 {
-                    "step_id": step.id,
-                    "status": "blocked",
-                    "reason": "Raw shell commands are disabled until the typed tool policy is implemented.",
+                    "type": "tool.blocked",
+                    "payload": {
+                        "step_id": step.id,
+                        "reason": "Raw shell commands are disabled until the typed tool policy is implemented.",
+                    },
                 }
             )
             continue
@@ -77,7 +80,7 @@ async def executor_node(state: dict) -> dict:
     return {
         "tool_results": results,
         "status": "executed",
-        "events": state.get("events", []) + [{"type": "tool.result", "payload": results}],
+        "events": state.get("events", []) + policy_events + [{"type": "tool.result", "payload": results}],
     }
 
 

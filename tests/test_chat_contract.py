@@ -32,7 +32,7 @@ def test_parser_accepts_json_wrapped_in_a_markdown_fence():
 
 
 @pytest.mark.asyncio
-async def test_executor_blocks_raw_shell_by_default(monkeypatch):
+async def test_executor_skips_raw_shell_by_default_without_blocking_the_run(monkeypatch):
     monkeypatch.delenv("ENABLE_UNSAFE_SHELL", raising=False)
     from src.config import get_settings
 
@@ -51,13 +51,15 @@ async def test_executor_blocks_raw_shell_by_default(monkeypatch):
             }
         )
 
-        assert result["tool_results"] == [
-            {
+        assert result["tool_results"] == []
+        assert result["status"] == "executed"
+        assert result["events"][0] == {
+            "type": "tool.blocked",
+            "payload": {
                 "step_id": "reply",
-                "status": "blocked",
                 "reason": "Raw shell commands are disabled until the typed tool policy is implemented.",
-            }
-        ]
+            },
+        }
     finally:
         get_settings.cache_clear()
 
