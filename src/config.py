@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/agent"
     workspace_root: str = "/workspace"
     max_tool_output_chars: int = 12000
+    enable_unsafe_shell: bool = False
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore", case_sensitive=False)
 
 @lru_cache

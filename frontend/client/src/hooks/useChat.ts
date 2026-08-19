@@ -1,6 +1,6 @@
 // Dark Mission Control: chat state translates API runs into a readable operator narrative.
 import { useCallback, useMemo, useState } from 'react'
-import type { AgentEvent, AgentStage, ChatMessage, ChatResponse, PlanStep } from '../types'
+import type { AgentEvent, AgentPlan, AgentStage, ChatMessage, ChatResponse, PlanStep } from '../types'
 
 const initialMessage: ChatMessage = {
   id: 'intro',
@@ -10,8 +10,23 @@ const initialMessage: ChatMessage = {
   stage: 'idle',
 }
 
-const normalizePlan = (plan?: ChatResponse['plan']): PlanStep[] => (plan ?? []).map((step, index) =>
-  typeof step === 'string' ? { id: `step-${index + 1}`, title: step, status: 'pending' } : { id: step.id || `step-${index + 1}`, title: step.title, description: step.description, status: step.status || 'pending', tool: step.tool },
+const planSteps = (plan?: ChatResponse['plan']): Array<PlanStep | string> => {
+  if (Array.isArray(plan)) return plan
+  if (plan && typeof plan === 'object' && Array.isArray((plan as AgentPlan).steps)) return (plan as AgentPlan).steps
+  return []
+}
+
+export const normalizePlan = (plan?: ChatResponse['plan']): PlanStep[] => planSteps(plan).map((step, index) =>
+  typeof step === 'string'
+    ? { id: `step-${index + 1}`, title: step, status: 'pending' }
+    : {
+        id: step.id || `step-${index + 1}`,
+        title: step.title,
+        description: step.description,
+        depends_on: step.depends_on,
+        status: step.status || 'pending',
+        tool: step.tool,
+      },
 )
 
 export function useChat() {

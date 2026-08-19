@@ -7,8 +7,15 @@ export interface PlanStep {
   id: string
   title: string
   description?: string
+  depends_on?: string[]
   status?: 'pending' | 'active' | 'completed' | 'error'
   tool?: string
+}
+
+export interface AgentPlan {
+  goal: string
+  steps: PlanStep[]
+  acceptance_criteria: string[]
 }
 
 export interface AgentEvent {
@@ -38,7 +45,7 @@ export interface ChatResponse {
   run_id?: string
   status?: string
   answer?: string
-  plan?: PlanStep[] | string[]
+  plan?: AgentPlan | PlanStep[] | string[]
   events?: AgentEvent[]
 }
 
