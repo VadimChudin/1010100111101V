@@ -18,7 +18,7 @@ app.include_router(ws_router)
 
 @app.get("/")
 async def root():
-    return {"name": "AI Agent Platform", "docs": "/docs", "health": "/v1/healthz"}
+    return {"name": "AI Agent Platform", "version": "0.1.1-cors-fix", "docs": "/docs", "health": "/v1/healthz"}
 
 if __name__ == "__main__":
     import uvicorn
