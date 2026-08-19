@@ -41,3 +41,4 @@ LangGraph управляет planner/executor/reviewer. OmniRoute выбирае
 ## Railway
 
 Проект собирается через `Dockerfile` и использует `railway.toml`. В Railway задайте `OPENROUTER_API_KEY`, `REDIS_URL`, `DATABASE_URL`, `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD` как secret variables. Публичный домен и WebSocket следует проверять в staging перед production.
+# Deployed on Railway
