@@ -21,7 +21,8 @@ class RunWorker:
         get_event_broker().publish(run_id)
 
     async def execute(self, job: RunJob) -> None:
-        await self.store.set_status(job.run_id, "running")
+        if not await self.store.claim_run(job.run_id):
+            return
         await self._persist_and_notify(job.run_id, {"type": "run.started", "payload": {"run_id": job.run_id}})
 
         async def event_sink(event: dict) -> None:

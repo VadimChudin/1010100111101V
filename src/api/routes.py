@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from src.events import get_event_broker
 from src.orchestrator.graph import run_agent
 from src.orchestrator.schemas import AgentPlan
-from src.queueing import RunJob, get_run_queue
+from src.queueing import RunJob, RunWorker, get_run_queue
 from src.storage import get_run_store
 
 router = APIRouter(prefix="/v1")
@@ -96,12 +96,15 @@ async def create_run(request: ChatRequest):
     run_id = str(uuid4())
     store = get_run_store()
     await store.create_run(run_id, request.user_id, request.message)
+    job = RunJob(run_id=run_id, user_id=request.user_id, task=request.message)
+    queue = get_run_queue()
     try:
-        await get_run_queue().enqueue(RunJob(run_id=run_id, user_id=request.user_id, task=request.message))
+        await queue.enqueue(job)
     except Exception as exc:
         await store.complete_run(run_id, "failed", "", None)
         await store.append_events(run_id, [{"type": "run.failed", "payload": {"message": "The run could not be queued."}}])
         raise HTTPException(status_code=503, detail="The run queue is unavailable.") from exc
+    asyncio.create_task(RunWorker(queue, store).execute(job), name=f"agent-run-{run_id}")
     return {"run_id": run_id, "status": "queued", "task": request.message}
 
 
