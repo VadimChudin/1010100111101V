@@ -21,9 +21,12 @@ python -m src.main
 
 ```bash
 curl http://localhost:8000/v1/healthz
-curl -X POST http://localhost:8000/v1/chat \
+curl -X POST http://localhost:8000/v1/runs \
   -H 'content-type: application/json' \
-  -d '{"message":"Составь короткий план проверки проекта"}'
+  -d '{"message":"Составь короткий план проверки проекта","approval_mode":"confirm_each"}'
+# затем откройте GET /v1/runs/{run_id}/stream для SSE timeline
+curl http://localhost:8000/v1/projects
+curl http://localhost:8000/v1/metrics
 ```
 
 Для локальных баз:
@@ -36,9 +39,13 @@ WebSocket endpoint: `ws://localhost:8000/v1/ws`. После подключени
 
 ## Архитектура
 
-LangGraph управляет planner/executor/reviewer. OmniRoute выбирает бесплатные модели OpenRouter и выполняет fallback. GraphitiMemory и SerenaClient являются version-agnostic adapters: их можно подключить через реальные клиенты без изменения API оркестратора. Shell tool в этом прототипе предназначен только для доверенного локального workspace; production требует отдельного sandbox runner, deny-by-default policy и approval для опасных действий.
+LangGraph управляет planner/executor/reviewer. SQLite WAL является durable source of truth для runs, events, approvals и project workspace; Redis используется для очереди и delivery wake-up. `POST /v1/runs` создаёт queued run, а `GET /v1/runs/{run_id}/stream` выдаёт возобновляемый SSE timeline по sequence cursor.
+
+Tool Gateway принимает только типизированные операции. Policy engine применяет `deny → grant → mode default`, а `.env`, credentials, raw shell, deploy и privileged actions не могут быть обойдены режимом approvals. В P0 доступны read-only workspace tools и обратимые bounded edits через API approval card.
+
+Project workspace хранит modules, notes, tasks и markers; React Flow canvas показывает их как устойчивую карту проекта. SerenaClient — read-only provider contract; реальный MCP transport включается только после отдельного подтверждённого подключения и isolated worker wiring. Подробности релиза: [`docs/CHANGELOG.md`](docs/CHANGELOG.md).
 
 ## Railway
 
-Проект собирается через `Dockerfile` и использует `railway.toml`. В Railway задайте `OPENROUTER_API_KEY`, `REDIS_URL`, `DATABASE_URL`, `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD` как secret variables. Публичный домен и WebSocket следует проверять в staging перед production.
+Проект собирается через `Dockerfile` и использует `railway.toml`. В Railway задайте `OPENROUTER_API_KEY`, `REDIS_URL`, `STATE_DATABASE_PATH` (по умолчанию `./data/agent-state.db`) и при необходимости `SENTRY_DSN` как secret variables. Для persistent SQLite WAL необходим mounted volume; без него данные сохраняются только до следующего redeploy. Публичный домен, SSE и WebSocket следует проверять в staging перед production.
 # Deployed on Railway
