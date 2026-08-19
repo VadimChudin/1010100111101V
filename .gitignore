@@ -6,5 +6,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 workspace/
+!src/workspace/
+!src/workspace/**
 *.log
 .DS_Store

@@ -16,6 +16,19 @@ from src.policy import ApprovalDecisionRequest, ApprovalMode, ToolCallRequest, T
 from src.queueing import RunJob, RunWorker, get_run_queue
 from src.storage import get_run_store
 from src.tools.gateway import ToolGateway
+from src.workspace import (
+    ModuleCreateRequest,
+    NoteCreateRequest,
+    ProjectCreateRequest,
+    TaskCreateRequest,
+    TaskStatusRequest,
+    WorkspaceModule,
+    WorkspaceNote,
+    WorkspaceProject,
+    WorkspaceSnapshot,
+    WorkspaceTask,
+    get_workspace_store,
+)
 
 router = APIRouter(prefix="/v1")
 
@@ -72,6 +85,64 @@ def public_plan(plan_payload: dict | None, task: str) -> PublicAgentPlan:
 @router.get("/healthz")
 async def healthz():
     return {"status": "ok"}
+
+
+def workspace_store():
+    return get_workspace_store(get_run_store())
+
+
+@router.get("/projects", response_model=list[WorkspaceProject])
+async def list_projects():
+    store = workspace_store()
+    await store.ensure_default_project()
+    return await store.list_projects()
+
+
+@router.post("/projects", response_model=WorkspaceProject, status_code=201)
+async def create_project(request: ProjectCreateRequest):
+    return await workspace_store().create_project(request)
+
+
+@router.get("/projects/{project_id}/workspace", response_model=WorkspaceSnapshot)
+async def get_workspace(project_id: str):
+    store = workspace_store()
+    snapshot = await store.snapshot(project_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return snapshot
+
+
+@router.post("/projects/{project_id}/modules", response_model=WorkspaceModule, status_code=201)
+async def create_module(project_id: str, request: ModuleCreateRequest):
+    store = workspace_store()
+    if await store.get_project(project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return await store.create_module(project_id, request)
+
+
+@router.post("/projects/{project_id}/notes", response_model=WorkspaceNote, status_code=201)
+async def create_note(project_id: str, request: NoteCreateRequest):
+    try:
+        return await workspace_store().create_note(project_id, request)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Module not found in project") from exc
+
+
+@router.post("/projects/{project_id}/tasks", response_model=WorkspaceTask, status_code=201)
+async def create_workspace_task(project_id: str, request: TaskCreateRequest):
+    try:
+        return await workspace_store().create_task(project_id, request)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Module not found in project") from exc
+
+
+@router.patch("/projects/{project_id}/tasks/{task_id}", response_model=WorkspaceTask)
+async def update_workspace_task(project_id: str, task_id: str, request: TaskStatusRequest):
+    store = workspace_store()
+    task = await store.set_task_status(task_id, request.status)
+    if task is None or task.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
 
 @router.post("/chat", response_model=ChatRunResponse)
 async def chat(request: ChatRequest):

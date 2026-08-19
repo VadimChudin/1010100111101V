@@ -8,6 +8,7 @@ from src.api.routes import router as api_router
 from src.api.websocket import router as ws_router
 from src.queueing import RunWorker, cancel_task, get_run_queue
 from src.storage import get_run_store
+from src.workspace import get_workspace_store
 
 
 @asynccontextmanager
@@ -15,6 +16,7 @@ async def lifespan(_: FastAPI):
     store = get_run_store()
     queue = get_run_queue()
     await store.initialize()
+    await get_workspace_store(store).initialize()
     await queue.initialize()
     worker_task = asyncio.create_task(RunWorker(queue, store).serve(), name="agent-run-worker")
     try:

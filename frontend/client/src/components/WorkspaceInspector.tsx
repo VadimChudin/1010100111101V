@@ -1,0 +1,31 @@
+import { FormEvent, useMemo, useState } from 'react'
+import { CheckCircle2, FileText, ListTodo, MapPin } from 'lucide-react'
+import type { WorkspaceModule, WorkspaceSnapshot, WorkspaceTaskStatus } from '../types'
+
+export default function WorkspaceInspector({ workspace, module, onCreateNote, onCreateTask, onTaskStatus }: { workspace?: WorkspaceSnapshot; module?: WorkspaceModule; onCreateNote: (module: WorkspaceModule, title: string, content: string) => Promise<void>; onCreateTask: (module: WorkspaceModule, title: string, description: string) => Promise<void>; onTaskStatus: (taskId: string, status: WorkspaceTaskStatus) => Promise<void> }) {
+  const [noteTitle, setNoteTitle] = useState('')
+  const [noteContent, setNoteContent] = useState('')
+  const [taskTitle, setTaskTitle] = useState('')
+  const [taskDescription, setTaskDescription] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const notes = useMemo(() => workspace?.notes.filter((note) => note.module_id === module?.id) || [], [module?.id, workspace?.notes])
+  const tasks = useMemo(() => workspace?.tasks.filter((task) => task.module_id === module?.id) || [], [module?.id, workspace?.tasks])
+  const markers = useMemo(() => workspace?.markers.filter((marker) => marker.module_id === module?.id) || [], [module?.id, workspace?.markers])
+
+  const addNote = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!module || !noteTitle.trim() || !noteContent.trim()) return
+    setSubmitting(true)
+    try { await onCreateNote(module, noteTitle.trim(), noteContent.trim()); setNoteTitle(''); setNoteContent('') } finally { setSubmitting(false) }
+  }
+  const addTask = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!module || !taskTitle.trim()) return
+    setSubmitting(true)
+    try { await onCreateTask(module, taskTitle.trim(), taskDescription.trim()); setTaskTitle(''); setTaskDescription('') } finally { setSubmitting(false) }
+  }
+
+  if (!module) return <aside className="hidden w-[320px] shrink-0 border-l border-white/[0.08] bg-[#0c1117]/90 p-6 xl:block"><p className="eyebrow">Context inspector</p><div className="mt-6 rounded-xl border border-dashed border-white/10 p-5 text-sm leading-6 text-text-dim"><MapPin size={16} className="mb-3 text-signal-ice" />Select a module on the canvas to review its notes, tasks, markers, and source scope.</div></aside>
+
+  return <aside className="hidden w-[320px] shrink-0 overflow-y-auto border-l border-white/[0.08] bg-[#0c1117]/90 p-5 xl:block"><p className="eyebrow">Context inspector</p><h2 className="mt-1 font-display text-xl font-semibold text-white">{module.title}</h2><p className="mt-2 break-all font-mono text-[10px] leading-5 text-text-dim">{module.source_scope || 'No source scope registered'}</p><div className="mt-4 flex flex-wrap gap-1.5">{markers.map((marker) => <span key={marker.id} className="rounded-full bg-white/[0.07] px-2 py-1 font-mono text-[9px] uppercase tracking-[0.1em] text-text-muted">{marker.type}</span>)}</div><section className="mt-6 border-t border-white/[0.08] pt-5"><div className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.13em] text-signal-ice"><FileText size={13} /> Notes · {notes.length}</div><div className="mt-3 space-y-2">{notes.slice(0, 3).map((note) => <article key={note.id} className="rounded-lg border border-white/[0.07] bg-white/[0.025] p-3"><h3 className="text-xs font-medium text-white">{note.title}</h3><p className="mt-1 line-clamp-3 text-[11px] leading-5 text-text-muted">{note.content}</p></article>)}</div><form onSubmit={addNote} className="mt-3 space-y-2"><input value={noteTitle} onChange={(event) => setNoteTitle(event.target.value)} placeholder="New note title" className="w-full rounded border border-white/10 bg-white/[0.04] px-2 py-1.5 text-xs text-white outline-none placeholder:text-text-dim" /><textarea value={noteContent} onChange={(event) => setNoteContent(event.target.value)} placeholder="Capture a decision, issue, or context" rows={3} className="w-full resize-none rounded border border-white/10 bg-white/[0.04] px-2 py-1.5 text-xs text-white outline-none placeholder:text-text-dim" /><button disabled={submitting} className="rounded border border-signal-ice/30 px-2 py-1 font-mono text-[9px] uppercase tracking-[0.1em] text-signal-ice disabled:opacity-50">Add note</button></form></section><section className="mt-6 border-t border-white/[0.08] pt-5"><div className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.13em] text-signal-ice"><ListTodo size={13} /> Tasks · {tasks.length}</div><div className="mt-3 space-y-2">{tasks.map((task) => <div key={task.id} className="flex gap-2 rounded-lg border border-white/[0.07] bg-white/[0.025] p-3"><button onClick={() => void onTaskStatus(task.id, task.status === 'done' ? 'todo' : 'done')} className={task.status === 'done' ? 'text-complete' : 'text-text-dim'} aria-label="Toggle task status"><CheckCircle2 size={14} /></button><div><h3 className={`text-xs ${task.status === 'done' ? 'text-text-dim line-through' : 'text-white'}`}>{task.title}</h3>{task.description && <p className="mt-1 text-[11px] leading-4 text-text-muted">{task.description}</p>}</div></div>)}</div><form onSubmit={addTask} className="mt-3 space-y-2"><input value={taskTitle} onChange={(event) => setTaskTitle(event.target.value)} placeholder="New task title" className="w-full rounded border border-white/10 bg-white/[0.04] px-2 py-1.5 text-xs text-white outline-none placeholder:text-text-dim" /><textarea value={taskDescription} onChange={(event) => setTaskDescription(event.target.value)} placeholder="Optional outcome or acceptance criteria" rows={2} className="w-full resize-none rounded border border-white/10 bg-white/[0.04] px-2 py-1.5 text-xs text-white outline-none placeholder:text-text-dim" /><button disabled={submitting} className="rounded border border-signal-ice/30 px-2 py-1 font-mono text-[9px] uppercase tracking-[0.1em] text-signal-ice disabled:opacity-50">Add task</button></form></section></aside>
+}

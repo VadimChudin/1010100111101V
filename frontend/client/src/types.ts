@@ -64,3 +64,76 @@ export interface SocketState {
   lastEvent?: AgentEvent
   error?: string
 }
+
+
+export type WorkspaceMarkerType = 'note' | 'task' | 'decision' | 'question' | 'error' | 'blocked' | 'running' | 'approval_required'
+export type WorkspaceTaskStatus = 'backlog' | 'todo' | 'in_progress' | 'blocked' | 'done'
+
+export interface WorkspaceProject {
+  id: string
+  name: string
+  description: string
+  created_at: string
+  updated_at: string
+}
+
+export interface WorkspaceModule {
+  id: string
+  project_id: string
+  title: string
+  kind: string
+  source_scope: string
+  aliases: string[]
+  dependencies: string[]
+  position_x: number
+  position_y: number
+  status: string
+  created_at: string
+  updated_at: string
+}
+
+export interface WorkspaceNote {
+  id: string
+  project_id: string
+  module_id: string
+  title: string
+  content: string
+  kind: WorkspaceMarkerType
+  author: string
+  source_run_id?: string
+  created_at: string
+}
+
+export interface WorkspaceTask {
+  id: string
+  project_id: string
+  module_id: string
+  title: string
+  description: string
+  acceptance_criteria: string[]
+  status: WorkspaceTaskStatus
+  priority: 'low' | 'medium' | 'high' | 'critical'
+  source_run_id?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface WorkspaceMarker {
+  id: string
+  project_id: string
+  module_id: string
+  type: WorkspaceMarkerType
+  title: string
+  state: string
+  source_kind: string
+  source_id: string
+  created_at: string
+}
+
+export interface WorkspaceSnapshot {
+  project: WorkspaceProject
+  modules: WorkspaceModule[]
+  notes: WorkspaceNote[]
+  tasks: WorkspaceTask[]
+  markers: WorkspaceMarker[]
+}
