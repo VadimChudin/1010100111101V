@@ -1,0 +1,49 @@
+// Dark Mission Control: shared domain types for the chat rail, execution timeline, and task graph.
+
+export type AgentStage = 'planning' | 'executing' | 'review' | 'completed' | 'error' | 'idle'
+export type EventKind = 'plan' | 'tool' | 'review' | 'answer' | 'system' | 'error'
+
+export interface PlanStep {
+  id: string
+  title: string
+  description?: string
+  status?: 'pending' | 'active' | 'completed' | 'error'
+  tool?: string
+}
+
+export interface AgentEvent {
+  id?: string
+  type?: EventKind | string
+  kind?: EventKind | string
+  message?: string
+  content?: string
+  text?: string
+  step_id?: string
+  stepId?: string
+  status?: string
+  timestamp?: string
+  tool?: string
+}
+
+export interface ChatMessage {
+  id: string
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  timestamp: string
+  runId?: string
+  stage?: AgentStage
+}
+
+export interface ChatResponse {
+  run_id?: string
+  status?: string
+  answer?: string
+  plan?: PlanStep[] | string[]
+  events?: AgentEvent[]
+}
+
+export interface SocketState {
+  connected: boolean
+  lastEvent?: AgentEvent
+  error?: string
+}
