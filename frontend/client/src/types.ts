@@ -2,6 +2,7 @@
 
 export type AgentStage = 'planning' | 'executing' | 'review' | 'completed' | 'error' | 'idle'
 export type EventKind = 'plan' | 'tool' | 'review' | 'answer' | 'system' | 'error'
+export type ApprovalMode = 'plan' | 'confirm_each' | 'allow_workspace_edits' | 'smart_development' | 'all_approvals_for_run'
 
 export interface PlanStep {
   id: string

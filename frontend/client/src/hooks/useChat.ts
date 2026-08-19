@@ -1,6 +1,6 @@
 // Dark Mission Control: chat state translates durable agent runs into a readable operator narrative.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AgentEvent, AgentPlan, AgentStage, ChatMessage, ChatResponse, PlanStep, RunSubmission } from '../types'
+import type { AgentEvent, AgentPlan, AgentStage, ApprovalMode, ChatMessage, ChatResponse, PlanStep, RunSubmission } from '../types'
 
 const initialMessage: ChatMessage = {
   id: 'intro',
@@ -33,6 +33,7 @@ const eventMessage = (event: AgentEvent): string => {
   const payload = event.payload || {}
   if (typeof payload.message === 'string') return payload.message
   if (event.type === 'plan.created') return 'Plan generated and ready for execution.'
+  if (event.type === 'run.created') return 'Run policy recorded.'
   if (event.type === 'run.started') return 'Run started.'
   if (event.type === 'tool.result') return 'Tool execution stage completed.'
   if (event.type === 'review.updated') return typeof payload.comment === 'string' ? payload.comment : 'Review completed.'
@@ -59,6 +60,7 @@ export function useChat() {
   const [runId, setRunId] = useState<string>()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>()
+  const [approvalMode, setApprovalMode] = useState<ApprovalMode>('confirm_each')
   const streamRef = useRef<EventSource | null>(null)
   const terminalRef = useRef(false)
 
@@ -110,7 +112,7 @@ export function useChat() {
     setEvents([])
     setMessages((current) => [...current, { id: `user-${Date.now()}`, role: 'user', content: message, timestamp: new Date().toISOString() }])
     try {
-      const response = await fetch(`${apiUrl.replace(/\/$/, '')}/v1/runs`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message }) })
+      const response = await fetch(`${apiUrl.replace(/\/$/, '')}/v1/runs`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, approval_mode: approvalMode }) })
       if (!response.ok) throw new Error(`Request failed with ${response.status}`)
       const data = await response.json() as RunSubmission
       setRunId(data.run_id)
@@ -147,5 +149,5 @@ export function useChat() {
     return 'idle'
   }, [error, events, loading])
 
-  return { messages, plan, events, runId, loading, error, stage, sendMessage, appendEvent }
+  return { messages, plan, events, runId, loading, error, stage, approvalMode, setApprovalMode, sendMessage, appendEvent }
 }

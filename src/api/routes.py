@@ -12,14 +12,17 @@ from pydantic import BaseModel, Field
 from src.events import get_event_broker
 from src.orchestrator.graph import run_agent
 from src.orchestrator.schemas import AgentPlan
+from src.policy import ApprovalDecisionRequest, ApprovalMode, ToolCallRequest, ToolCallResponse
 from src.queueing import RunJob, RunWorker, get_run_queue
 from src.storage import get_run_store
+from src.tools.gateway import ToolGateway
 
 router = APIRouter(prefix="/v1")
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=20000)
     user_id: str = "anonymous"
+    approval_mode: ApprovalMode = ApprovalMode.CONFIRM_EACH
 
 
 class PublicPlanStep(BaseModel):
@@ -96,6 +99,7 @@ async def create_run(request: ChatRequest):
     run_id = str(uuid4())
     store = get_run_store()
     await store.create_run(run_id, request.user_id, request.message)
+    await store.append_events(run_id, [{"type": "run.created", "payload": {"approval_mode": request.approval_mode}}])
     job = RunJob(run_id=run_id, user_id=request.user_id, task=request.message)
     queue = get_run_queue()
     try:
@@ -106,6 +110,36 @@ async def create_run(request: ChatRequest):
         raise HTTPException(status_code=503, detail="The run queue is unavailable.") from exc
     asyncio.create_task(RunWorker(queue, store).execute(job), name=f"agent-run-{run_id}")
     return {"run_id": run_id, "status": "queued", "task": request.message}
+
+
+@router.post("/runs/{run_id}/tool-calls", response_model=ToolCallResponse)
+async def invoke_tool_call(run_id: str, request: ToolCallRequest):
+    store = get_run_store()
+    if await store.get_run(run_id) is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return await ToolGateway(store).invoke(run_id, request)
+
+
+@router.get("/runs/{run_id}/approvals")
+async def get_approvals(run_id: str, status: str | None = None):
+    store = get_run_store()
+    if await store.get_run(run_id) is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return {"approvals": [ToolGateway._approval_model(item).model_dump() for item in await store.list_approvals(run_id, status)]}
+
+
+@router.post("/runs/{run_id}/approvals/{approval_id}/decision", response_model=ToolCallResponse)
+async def resolve_approval(run_id: str, approval_id: str, request: ApprovalDecisionRequest):
+    store = get_run_store()
+    approval = await store.get_approval(approval_id)
+    if approval is None or approval.run_id != run_id:
+        raise HTTPException(status_code=404, detail="Approval not found")
+    if approval.status != "pending":
+        raise HTTPException(status_code=409, detail="Approval has already been resolved")
+    response = await ToolGateway(store).resolve(approval_id, request.approved, request.grant_scope)
+    if response is None:
+        raise HTTPException(status_code=404, detail="Approval not found")
+    return response
 
 
 @router.get("/runs/{run_id}", response_model=RunDetailResponse)

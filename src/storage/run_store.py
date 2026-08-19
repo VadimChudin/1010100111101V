@@ -68,6 +68,18 @@ class PersistedRun:
     updated_at: str
 
 
+@dataclass(frozen=True)
+class PersistedApproval:
+    id: str
+    run_id: str
+    action_type: str
+    scope: dict[str, Any]
+    status: str
+    requested_at: str
+    decided_at: str | None
+    expires_at: str | None
+
+
 class SQLiteRunStore:
     """Small, durable single-service store for the non-voice MVP.
 
@@ -214,6 +226,87 @@ class SQLiteRunStore:
     async def get_events(self, run_id: str, after_sequence: int = 0) -> list[dict[str, Any]]:
         await self.initialize()
         return await asyncio.to_thread(self._get_events_sync, run_id, after_sequence)
+
+    @staticmethod
+    def _approval_from_row(row: sqlite3.Row) -> PersistedApproval:
+        return PersistedApproval(
+            id=row["id"],
+            run_id=row["run_id"],
+            action_type=row["action_type"],
+            scope=json.loads(row["scope_json"]),
+            status=row["status"],
+            requested_at=row["requested_at"],
+            decided_at=row["decided_at"],
+            expires_at=row["expires_at"],
+        )
+
+    def _create_approval_sync(self, approval_id: str, run_id: str, action_type: str, scope: dict[str, Any]) -> PersistedApproval:
+        timestamp = utc_now()
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO approvals (id, run_id, action_type, scope_json, status, requested_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (approval_id, run_id, action_type, json.dumps(scope, ensure_ascii=False), "pending", timestamp),
+            )
+        return PersistedApproval(approval_id, run_id, action_type, scope, "pending", timestamp, None, None)
+
+    async def create_approval(self, approval_id: str, run_id: str, action_type: str, scope: dict[str, Any]) -> PersistedApproval:
+        await self.initialize()
+        return await asyncio.to_thread(self._create_approval_sync, approval_id, run_id, action_type, scope)
+
+    def _get_approval_sync(self, approval_id: str) -> PersistedApproval | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
+        return self._approval_from_row(row) if row else None
+
+    async def get_approval(self, approval_id: str) -> PersistedApproval | None:
+        await self.initialize()
+        return await asyncio.to_thread(self._get_approval_sync, approval_id)
+
+    def _resolve_approval_sync(self, approval_id: str, approved: bool, grant_scope: str) -> PersistedApproval | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
+            if row is None or row["status"] != "pending":
+                return self._approval_from_row(row) if row else None
+            scope = json.loads(row["scope_json"])
+            scope["grant_scope"] = grant_scope
+            status = "approved" if approved else "denied"
+            connection.execute(
+                "UPDATE approvals SET status = ?, scope_json = ?, decided_at = ? WHERE id = ?",
+                (status, json.dumps(scope, ensure_ascii=False), utc_now(), approval_id),
+            )
+            updated = connection.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
+        return self._approval_from_row(updated)
+
+    async def resolve_approval(self, approval_id: str, approved: bool, grant_scope: str) -> PersistedApproval | None:
+        await self.initialize()
+        return await asyncio.to_thread(self._resolve_approval_sync, approval_id, approved, grant_scope)
+
+    def _list_approvals_sync(self, run_id: str, status: str | None = None) -> list[PersistedApproval]:
+        query = "SELECT * FROM approvals WHERE run_id = ?"
+        parameters: tuple[Any, ...] = (run_id,)
+        if status:
+            query += " AND status = ?"
+            parameters = (run_id, status)
+        query += " ORDER BY requested_at"
+        with self._connect() as connection:
+            rows = connection.execute(query, parameters).fetchall()
+        return [self._approval_from_row(row) for row in rows]
+
+    async def list_approvals(self, run_id: str, status: str | None = None) -> list[PersistedApproval]:
+        await self.initialize()
+        return await asyncio.to_thread(self._list_approvals_sync, run_id, status)
+
+    async def approval_grants(self, run_id: str) -> set[str]:
+        approvals = await self.list_approvals(run_id, status="approved")
+        grants: set[str] = set()
+        for approval in approvals:
+            grant_scope = str(approval.scope.get("grant_scope", "once"))
+            tool = str(approval.scope.get("tool", ""))
+            if grant_scope == "all_approved_run":
+                grants.add("all_approved_run")
+            elif grant_scope in {"run", "workspace"} and tool:
+                grants.add(tool)
+        return grants
 
 
 _store: SQLiteRunStore | None = None
