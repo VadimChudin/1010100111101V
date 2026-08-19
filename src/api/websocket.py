@@ -1,17 +1,28 @@
-"""WebSocket chat handler."""
-from fastapi import WebSocket, WebSocketDisconnect
-from src.orchestrator.graph import agent_graph
+from __future__ import annotations
+from uuid import uuid4
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from src.orchestrator.graph import run_agent
 
-async def chat_websocket(websocket: WebSocket, thread_id: str) -> None:
+router = APIRouter()
+
+@router.websocket("/v1/ws")
+async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     try:
-        while True:
-            message = await websocket.receive_text()
-            state = {"thread_id": thread_id, "user_message": message, "events": [], "iteration": 0}
-            await websocket.send_json({"type": "started", "thread_id": thread_id})
-            result = await agent_graph.ainvoke(state, config={"configurable": {"thread_id": thread_id}})
-            for event in result.get("events", []):
-                await websocket.send_json({"type": "event", **event})
-            await websocket.send_json({"type": "completed", "result": result.get("execution_result", ""), "review": result.get("review", "")})
+        payload = await websocket.receive_json()
+        message = str(payload.get("message", "")).strip()
+        if not message:
+            await websocket.send_json({"type": "run.failed", "error": "message is required"})
+            return
+        run_id = str(uuid4())
+        await websocket.send_json({"type": "run.started", "run_id": run_id})
+        state = await run_agent(message, run_id, str(payload.get("user_id", "anonymous")))
+        for event in state.get("events", []):
+            await websocket.send_json({"run_id": run_id, **event})
+        await websocket.send_json({"type": "run.completed", "run_id": run_id, "status": state.get("status"), "review": state.get("review")})
     except WebSocketDisconnect:
         return
+    except Exception as exc:
+        await websocket.send_json({"type": "run.failed", "error": str(exc)})
+    finally:
+        await websocket.close()

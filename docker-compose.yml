@@ -1,73 +1,27 @@
 services:
-  app:
+  api:
     build: .
-    env_file: .env
-    environment:
-      PORT: 8000
-      NEO4J_URI: bolt://neo4j:7687
-      REDIS_URL: redis://redis:6379/0
-      DATABASE_URL: postgresql+asyncpg://agent:agent@postgres:5432/agentdb
-    ports:
-      - "8000:8000"
-    depends_on:
-      neo4j:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-    volumes:
-      - ./src:/app/src
-
-  neo4j:
-    image: neo4j:5.26-community
-    environment:
-      NEO4J_AUTH: ${NEO4J_USERNAME:-neo4j}/${NEO4J_PASSWORD:-change-me}
-      NEO4J_server_memory_heap_initial__size: 256m
-      NEO4J_server_memory_heap_max__size: 512m
-    ports:
-      - "7474:7474"
-      - "7687:7687"
-    volumes:
-      - neo4j_data:/data
-      - neo4j_logs:/logs
-    healthcheck:
-      test: ["CMD-SHELL", "cypher-shell -u $${NEO4J_USERNAME:-neo4j} -p $${NEO4J_PASSWORD:-change-me} 'RETURN 1' || exit 1"]
-      interval: 10s
-      timeout: 10s
-      retries: 10
-
+    ports: ["8000:8000"]
+    env_file: [.env]
+    volumes: ["./workspace:/workspace"]
+    depends_on: [redis, postgres, neo4j]
   redis:
     image: redis:7-alpine
-    command: redis-server --appendonly yes
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
+    ports: ["6379:6379"]
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: agent
-      POSTGRES_PASSWORD: agent
-      POSTGRES_DB: agentdb
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U agent -d agentdb"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
+      POSTGRES_DB: agent
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+  neo4j:
+    image: neo4j:5.26
+    environment:
+      NEO4J_AUTH: neo4j/password
+    ports: ["7474:7474", "7687:7687"]
+    volumes: ["neo4jdata:/data"]
 volumes:
-  neo4j_data:
-  neo4j_logs:
-  redis_data:
-  postgres_data:
+  pgdata:
+  neo4jdata:

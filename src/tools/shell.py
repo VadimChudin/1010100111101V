@@ -1,17 +1,15 @@
-"""Restricted shell execution tool."""
+from __future__ import annotations
 import asyncio
-import shlex
-from src.config import Settings, get_settings
+from src.config import get_settings
 
-async def run_command(command: str, settings: Settings | None = None) -> dict[str, object]:
-    settings = settings or get_settings()
-    parts = shlex.split(command)
-    if not parts or parts[0] not in settings.allowed_commands:
-        return {"ok": False, "error": "Command is not allowed"}
+async def execute_shell(command: str, cwd: str | None = None, timeout_s: int = 30) -> dict:
+    settings = get_settings()
+    if not command or len(command) > 2000:
+        return {"exit_code": -1, "stdout": "", "stderr": "invalid command"}
     try:
-        process = await asyncio.create_subprocess_exec(*parts, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=settings.shell_command_timeout)
-        return {"ok": process.returncode == 0, "returncode": process.returncode, "stdout": stdout.decode(errors="replace"), "stderr": stderr.decode(errors="replace")}
+        proc = await asyncio.create_subprocess_shell(command, cwd=cwd or settings.workspace_root, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+        return {"exit_code": proc.returncode, "stdout": stdout.decode(errors="replace")[:settings.max_tool_output_chars], "stderr": stderr.decode(errors="replace")[:settings.max_tool_output_chars]}
     except asyncio.TimeoutError:
-        process.kill()
-        return {"ok": False, "error": "Command timed out"}
+        proc.kill()
+        return {"exit_code": -1, "stdout": "", "stderr": "command timed out"}

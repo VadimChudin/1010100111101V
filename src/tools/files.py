@@ -1,23 +1,18 @@
-"""Constrained file operations rooted at a configured workspace."""
+from __future__ import annotations
 from pathlib import Path
+from src.config import get_settings
 
-class FileTool:
-    def __init__(self, root: str = ".") -> None:
-        self.root = Path(root).resolve()
+def safe_path(relative: str) -> Path:
+    root = Path(get_settings().workspace_root).resolve()
+    target = (root / relative).resolve()
+    if root != target and root not in target.parents:
+        raise PermissionError("path escapes workspace")
+    return target
 
-    def _safe(self, relative: str) -> Path:
-        path = (self.root / relative).resolve()
-        if self.root not in path.parents and path != self.root:
-            raise ValueError("Path escapes workspace")
-        return path
+def read_file(relative: str) -> str:
+    return safe_path(relative).read_text(encoding="utf-8")
 
-    def read(self, relative: str) -> str:
-        return self._safe(relative).read_text(encoding="utf-8")
-
-    def write(self, relative: str, content: str) -> None:
-        path = self._safe(relative)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-
-    def list(self, relative: str = ".") -> list[str]:
-        return [str(item.relative_to(self.root)) for item in self._safe(relative).iterdir()]
+def write_file(relative: str, content: str) -> None:
+    target = safe_path(relative)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")

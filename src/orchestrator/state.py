@@ -1,14 +1,16 @@
-"""Typed state shared by LangGraph nodes."""
-from typing import Any, TypedDict
+from __future__ import annotations
+from typing import TypedDict, Any
 
 class AgentState(TypedDict, total=False):
-    thread_id: str
-    user_message: str
-    metadata: dict[str, Any]
-    plan: list[str]
-    execution_result: str
-    review: str
+    run_id: str
+    user_id: str
+    task: str
+    messages: list[dict[str, Any]]
+    plan: dict[str, Any] | None
+    current_step: int
+    tool_results: list[dict[str, Any]]
+    review: dict[str, Any] | None
+    events: list[dict[str, Any]]
     status: str
     iteration: int
-    events: list[dict[str, Any]]
-    error: str
+    error: str | None

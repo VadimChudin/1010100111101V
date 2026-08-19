@@ -1,30 +1,15 @@
-"""FastAPI application entry point."""
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI
 from src.api.routes import router as api_router
-from src.api.websocket import chat_websocket
-from src.config import get_settings
-from src.memory.graphiti_memory import GraphitiMemory
-from src.memory.short_term import ShortTermMemory
+from src.api.websocket import router as ws_router
 
-settings = get_settings()
-graphiti_memory = GraphitiMemory(settings)
-short_term_memory = ShortTermMemory(settings)
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    await graphiti_memory.connect()
-    yield
-    await graphiti_memory.close()
-    await short_term_memory.close()
-
-app = FastAPI(title="1010100111101V", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="AI Agent Platform", version="0.1.0")
 app.include_router(api_router)
+app.include_router(ws_router)
 
-@app.get("/health")
-async def health() -> dict[str, object]:
-    return {"status": "ok", "service": "1010100111101V", "environment": settings.app_env, "graphiti_enabled": settings.graphiti_enabled}
+@app.get("/")
+async def root():
+    return {"name": "AI Agent Platform", "docs": "/docs", "health": "/v1/healthz"}
 
-@app.websocket("/ws/chat/{thread_id}")
-async def websocket_chat(websocket: WebSocket, thread_id: str) -> None:
-    await chat_websocket(websocket, thread_id)
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("src.main:app", host="0.0.0.0", port=8000, reload=False)

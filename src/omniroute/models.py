@@ -1,24 +1,22 @@
-"""Model registry used by OmniRoute.
-
-IDs are OpenRouter-compatible defaults and can be overridden through code when
-providers change their catalog.
-"""
 from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ModelSpec:
-    model_id: str
-    tier: str
-    description: str
-    input_price: float
-    output_price: float
-    capabilities: frozenset[str]
+    name: str
+    strengths: tuple[str, ...]
+    max_tokens: int = 2048
 
-MODEL_REGISTRY: dict[str, ModelSpec] = {
-    "simple": ModelSpec("openai/gpt-4o-mini", "simple", "Fast and economical", 0.15, 0.60, frozenset({"chat", "json"})),
-    "standard": ModelSpec("anthropic/claude-3.5-sonnet", "standard", "Balanced reasoning and coding", 3.0, 15.0, frozenset({"chat", "code", "json"})),
-    "complex": ModelSpec("anthropic/claude-3.7-sonnet", "complex", "Advanced multi-step reasoning", 3.0, 15.0, frozenset({"chat", "code", "reasoning", "json"})),
+FREE_MODELS = (
+    ModelSpec("meta-llama/llama-3.1-8b-instruct:free", ("general", "fast")),
+    ModelSpec("google/gemma-2-9b-it:free", ("general", "structured")),
+    ModelSpec("qwen/qwen-2-7b-instruct:free", ("coding", "reasoning", "fast")),
+)
+
+MODEL_BY_COMPLEXITY = {
+    "low": FREE_MODELS[2],
+    "medium": FREE_MODELS[1],
+    "high": FREE_MODELS[0],
 }
 
-def get_model(tier: str) -> ModelSpec:
-    return MODEL_REGISTRY.get(tier, MODEL_REGISTRY["standard"])
+def get_model_for_complexity(complexity: str) -> ModelSpec:
+    return MODEL_BY_COMPLEXITY.get(complexity, MODEL_BY_COMPLEXITY["medium"])

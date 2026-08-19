@@ -1,24 +1,19 @@
-"""Redis-backed short-term conversation memory."""
+from __future__ import annotations
 import json
-from typing import Any
-from redis.asyncio import Redis
-from src.config import Settings, get_settings
+from src.config import get_settings
 
 class ShortTermMemory:
-    def __init__(self, settings: Settings | None = None) -> None:
-        self.settings = settings or get_settings()
-        self.redis: Redis = Redis.from_url(self.settings.redis_url, decode_responses=True)
+    def __init__(self, redis_client=None):
+        self.client = redis_client
+        self.settings = get_settings()
 
-    def _key(self, thread_id: str) -> str:
-        return f"agent:thread:{thread_id}"
+    async def append(self, session_id: str, message: dict) -> None:
+        if self.client is not None:
+            await self.client.rpush(f"session:{session_id}:messages", json.dumps(message, ensure_ascii=False))
+            await self.client.expire(f"session:{session_id}:messages", 86400)
 
-    async def append(self, thread_id: str, event: dict[str, Any]) -> None:
-        await self.redis.rpush(self._key(thread_id), json.dumps(event, ensure_ascii=False))
-        await self.redis.expire(self._key(thread_id), self.settings.redis_ttl_seconds)
-
-    async def get(self, thread_id: str) -> list[dict[str, Any]]:
-        values = await self.redis.lrange(self._key(thread_id), 0, -1)
-        return [json.loads(value) for value in values]
-
-    async def close(self) -> None:
-        await self.redis.aclose()
+    async def get(self, session_id: str, limit: int = 20) -> list[dict]:
+        if self.client is None:
+            return []
+        values = await self.client.lrange(f"session:{session_id}:messages", -limit, -1)
+        return [json.loads(item) for item in values]
