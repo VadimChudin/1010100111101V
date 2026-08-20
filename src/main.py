@@ -1,9 +1,10 @@
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from src.api.auth import require_user
 from src.api.routes import router as api_router
 from src.auth import get_auth_store
 from src.config import get_settings
@@ -51,7 +52,8 @@ app.include_router(api_router)
 app.include_router(ws_router)
 
 @app.get("/v1/metrics")
-async def get_metrics():
+async def get_metrics(request: Request):
+    await require_user(request)
     return metrics.snapshot()
 
 
