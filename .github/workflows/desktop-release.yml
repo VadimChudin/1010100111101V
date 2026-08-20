@@ -1,0 +1,86 @@
+name: Desktop Test Channel
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release-main
+  cancel-in-progress: false
+
+jobs:
+  build-desktop:
+    name: Build desktop test artifact (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows
+            os: windows-latest
+            command: pnpm exec electron-builder --win nsis --x64 --publish never
+          - name: linux
+            os: ubuntu-latest
+            command: pnpm exec electron-builder --linux --x64 --publish never
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '11'
+      - name: Install Linux packaging prerequisite
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y binutils
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: pnpm install --frozen-lockfile
+      - name: Verify desktop contracts
+        working-directory: desktop
+        run: pnpm test
+      - name: Build platform installer
+        working-directory: desktop
+        shell: bash
+        run: ${{ matrix.command }}
+      - name: Upload platform artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.name }}
+          path: |
+            desktop/dist/*.exe
+            desktop/dist/*.AppImage
+            desktop/dist/*.deb
+          if-no-files-found: error
+
+  publish-desktop-latest:
+    name: Publish desktop-latest
+    needs: build-desktop
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: desktop-artifacts
+          merge-multiple: true
+      - name: Move desktop-latest tag to this tested build
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f desktop-latest "${{ github.sha }}"
+          git push --force origin refs/tags/desktop-latest
+      - name: Create or update desktop test release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view desktop-latest >/dev/null 2>&1; then
+            gh release edit desktop-latest --title "Agent Room Desktop — test latest" --notes "Automated unsigned desktop test channel. Build: ${{ github.sha }}" --prerelease
+          else
+            gh release create desktop-latest --title "Agent Room Desktop — test latest" --notes "Automated unsigned desktop test channel. Build: ${{ github.sha }}" --target "${{ github.sha }}" --prerelease
+          fi
+          gh release upload desktop-latest desktop-artifacts/* --clobber

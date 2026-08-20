@@ -39,6 +39,17 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
     revoked_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS auth_desktop_authorizations (
+    request_id TEXT PRIMARY KEY,
+    request_secret_hash TEXT NOT NULL,
+    oauth_state_hash TEXT NOT NULL UNIQUE,
+    user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    completed_at TEXT,
+    delivered_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS project_members (
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -48,6 +59,7 @@ CREATE TABLE IF NOT EXISTS project_members (
 );
 
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_auth_desktop_authorizations_expiry ON auth_desktop_authorizations(expires_at);
 CREATE INDEX IF NOT EXISTS idx_project_members_user ON project_members(user_id);
 """
 
@@ -126,6 +138,103 @@ class AuthStore:
     async def consume_oauth_state(self, state: str) -> str | None:
         await self.initialize()
         return await asyncio.to_thread(self._consume_oauth_state_sync, state)
+
+    def _create_desktop_authorization_sync(self) -> tuple[str, str, str, str, str]:
+        request_id = str(uuid4())
+        request_secret = secrets.token_urlsafe(48)
+        oauth_state = secrets.token_urlsafe(32)
+        verifier = secrets.token_urlsafe(64)
+        now = timestamp()
+        expiry = expires_in(10)
+        with self._connect() as connection:
+            connection.execute("DELETE FROM auth_oauth_states WHERE expires_at < ?", (now,))
+            connection.execute("DELETE FROM auth_desktop_authorizations WHERE expires_at < ?", (now,))
+            connection.execute(
+                "INSERT INTO auth_oauth_states (state_hash, code_verifier, expires_at, created_at) VALUES (?, ?, ?, ?)",
+                (digest(oauth_state), verifier, expiry, now),
+            )
+            connection.execute(
+                "INSERT INTO auth_desktop_authorizations (request_id, request_secret_hash, oauth_state_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
+                (request_id, digest(request_secret), digest(oauth_state), expiry, now),
+            )
+        return request_id, request_secret, oauth_state, verifier, expiry
+
+    async def create_desktop_authorization(self) -> tuple[str, str, str, str, str]:
+        await self.initialize()
+        return await asyncio.to_thread(self._create_desktop_authorization_sync)
+
+    def _desktop_request_for_state_sync(self, oauth_state: str) -> str | None:
+        now = timestamp()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT request_id FROM auth_desktop_authorizations WHERE oauth_state_hash = ? AND expires_at > ? AND completed_at IS NULL",
+                (digest(oauth_state), now),
+            ).fetchone()
+        return str(row["request_id"]) if row is not None else None
+
+    async def desktop_request_for_state(self, oauth_state: str) -> str | None:
+        await self.initialize()
+        return await asyncio.to_thread(self._desktop_request_for_state_sync, oauth_state)
+
+    def _complete_desktop_authorization_sync(self, request_id: str, user_id: str) -> bool:
+        now = timestamp()
+        with self._connect() as connection:
+            result = connection.execute(
+                "UPDATE auth_desktop_authorizations SET user_id = ?, completed_at = ? WHERE request_id = ? AND expires_at > ? AND completed_at IS NULL",
+                (user_id, now, request_id, now),
+            )
+        return result.rowcount == 1
+
+    async def complete_desktop_authorization(self, request_id: str, user_id: str) -> bool:
+        await self.initialize()
+        return await asyncio.to_thread(self._complete_desktop_authorization_sync, request_id, user_id)
+
+    def _desktop_authorization_status_sync(self, request_id: str, request_secret: str) -> tuple[str, str, AuthUser | None] | None:
+        now = timestamp()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT auth_desktop_authorizations.*, users.* FROM auth_desktop_authorizations LEFT JOIN users ON users.id = auth_desktop_authorizations.user_id WHERE request_id = ? AND request_secret_hash = ?",
+                (request_id, digest(request_secret)),
+            ).fetchone()
+        if row is None:
+            return None
+        if not valid_until(row["expires_at"]):
+            return "expired", str(row["expires_at"]), None
+        if row["completed_at"] is None:
+            return "pending", str(row["expires_at"]), None
+        user = self._user(row) if row["user_id"] is not None else None
+        return "completed", str(row["expires_at"]), user
+
+    async def desktop_authorization_status(self, request_id: str, request_secret: str) -> tuple[str, str, AuthUser | None] | None:
+        await self.initialize()
+        return await asyncio.to_thread(self._desktop_authorization_status_sync, request_id, request_secret)
+
+    def _claim_desktop_authorization_sync(self, request_id: str, request_secret: str) -> tuple[str, AuthUser] | None:
+        now = timestamp()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT auth_desktop_authorizations.*, users.* FROM auth_desktop_authorizations LEFT JOIN users ON users.id = auth_desktop_authorizations.user_id WHERE request_id = ? AND request_secret_hash = ?",
+                (request_id, digest(request_secret)),
+            ).fetchone()
+            if row is None or not valid_until(row["expires_at"]) or row["completed_at"] is None or row["delivered_at"] is not None or row["user_id"] is None:
+                return None
+            token = secrets.token_urlsafe(48)
+            connection.execute(
+                "INSERT INTO auth_sessions (token_hash, user_id, expires_at, created_at, revoked_at) VALUES (?, ?, ?, ?, NULL)",
+                (digest(token), str(row["user_id"]), expires_in(60 * 24 * 7), now),
+            )
+            result = connection.execute(
+                "UPDATE auth_desktop_authorizations SET delivered_at = ? WHERE request_id = ? AND delivered_at IS NULL",
+                (now, request_id),
+            )
+            if result.rowcount != 1:
+                connection.execute("DELETE FROM auth_sessions WHERE token_hash = ?", (digest(token),))
+                return None
+        return token, self._user(row)
+
+    async def claim_desktop_authorization(self, request_id: str, request_secret: str) -> tuple[str, AuthUser] | None:
+        await self.initialize()
+        return await asyncio.to_thread(self._claim_desktop_authorization_sync, request_id, request_secret)
 
     def _upsert_user_sync(self, profile: GitHubProfile) -> AuthUser:
         now = timestamp()

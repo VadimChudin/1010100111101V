@@ -17,3 +17,9 @@ local-runtime/dist/
 local-runtime/release/
 local-runtime/build/
 local-runtime/*.egg-info/
+
+# Desktop packaging artifacts
+desktop/node_modules/
+desktop/dist/
+desktop/release/
+desktop/out/

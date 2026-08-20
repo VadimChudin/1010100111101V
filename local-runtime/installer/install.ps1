@@ -8,7 +8,16 @@ $BootstrapDir = Join-Path $StateDir 'bootstrap'
 
 $Python = Get-Command python -ErrorAction SilentlyContinue
 if (-not $Python) { $Python = Get-Command py -ErrorAction SilentlyContinue }
-if (-not $Python) { throw 'Python 3.11+ is required. Install Python, then run this installer again.' }
+if (-not $Python) {
+  $Winget = Get-Command winget -ErrorAction SilentlyContinue
+  if ($Winget) {
+    Write-Host 'Installing the isolated Agent Room Python runtime…'
+    & $Winget.Source install --id Python.Python.3.11 --exact --scope user --silent --accept-package-agreements --accept-source-agreements
+    $Candidate = Join-Path $env:LOCALAPPDATA 'Programs\Python\Python311\python.exe'
+    if (Test-Path $Candidate) { $Python = @{ Source = $Candidate } }
+  }
+}
+if (-not $Python) { throw 'Python 3.11 could not be provisioned automatically. Install it once, then restart Agent Room.' }
 
 New-Item -ItemType Directory -Force -Path $BootstrapDir | Out-Null
 $headers = @{ Accept = 'application/vnd.github+json'; 'User-Agent' = 'agent-room-runtime-installer' }

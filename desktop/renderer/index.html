@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Agent Room</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="brand"><div class="mark">AR</div><div><h1>agent <span>room</span></h1><p>Local project intelligence</p></div><div class="badge">TEST CHANNEL</div></section>
+      <section class="panel intro-panel" id="intro-panel">
+        <p class="eyebrow">PAIRED LOCAL RUNTIME</p>
+        <h2>Your project, with local context.</h2>
+        <p class="lead">Connect GitHub in your browser. Agent Room will pair this computer, synchronize the project state, and open the same chat and project dashboard you use on the web.</p>
+        <div class="callout"><span class="dot"></span><span>No source code leaves this computer through the setup flow. Serena and Graphiti remain local components.</span></div>
+        <button class="primary" id="connect-button">Continue with GitHub</button>
+        <p class="hint">A secure browser tab will open. Return here after you approve access.</p>
+      </section>
+
+      <section class="panel hidden" id="authorizing-panel">
+        <p class="eyebrow">BROWSER AUTHORIZATION</p>
+        <h2>Waiting for approval</h2>
+        <p class="lead">Complete GitHub authorization in the browser window that just opened. This app is waiting for its one-time session confirmation.</p>
+        <div class="progress"><span></span></div>
+        <button class="secondary" id="retry-browser-button">Open browser again</button>
+        <p class="hint" id="auth-expiry"></p>
+      </section>
+
+      <section class="panel hidden" id="setup-panel">
+        <p class="eyebrow">LOCAL SETUP</p>
+        <h2>Prepare this computer</h2>
+        <p class="lead">Choose the local Git workspace. The runtime will register this device and start its durable synchronization loop.</p>
+        <label class="field-label" for="workspace-path">Local workspace</label>
+        <div class="field-row"><input id="workspace-path" readonly placeholder="Select a Git workspace" /><button class="secondary" id="choose-workspace-button">Choose folder</button></div>
+        <div class="component-list" id="component-list">
+          <div class="component"><span class="status idle" id="runtime-status"></span><div><strong>Agent Room Runtime</strong><small id="runtime-detail">Ready to install</small></div></div>
+          <div class="component"><span class="status idle" id="serena-status"></span><div><strong>Serena</strong><small id="serena-detail">Read-only semantic navigation</small></div></div>
+          <div class="component"><span class="status idle" id="graphiti-status"></span><div><strong>Graphiti memory</strong><small id="graphiti-detail">Optional local Neo4j memory stack</small></div></div>
+        </div>
+        <button class="primary" id="install-button" disabled>Install and pair this computer</button>
+        <p class="hint" id="setup-note">Select a workspace to continue.</p>
+      </section>
+
+      <section class="panel hidden" id="ready-panel">
+        <p class="eyebrow">CONNECTED</p>
+        <h2>Agent Room is ready.</h2>
+        <p class="lead" id="ready-detail">The local runtime is synchronizing this workspace. Opening the control surface will use your just-authorized secure session.</p>
+        <div class="ready-grid"><div><span>Cloud</span><strong>Connected</strong></div><div><span>Runtime</span><strong id="ready-runtime">Running</strong></div><div><span>Workspace</span><strong id="ready-workspace">Selected</strong></div></div>
+        <button class="primary" id="open-workspace-button">Open Agent Room</button>
+      </section>
+      <footer><span id="build-label">Agent Room Desktop · test</span><button class="link" id="diagnostics-button">View setup diagnostics</button></footer>
+    </main>
+    <script type="module" src="./app.mjs"></script>
+  </body>
+</html>

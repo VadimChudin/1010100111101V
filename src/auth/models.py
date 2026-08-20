@@ -31,3 +31,16 @@ class GitHubProfile(BaseModel):
     login: str
     email: str | None = None
     avatar_url: str | None = None
+
+
+class DesktopAuthorizationStart(BaseModel):
+    request_id: str
+    request_secret: str
+    authorize_url: str
+    expires_at: str
+
+
+class DesktopAuthorizationStatus(BaseModel):
+    status: str
+    expires_at: str
+    user: AuthUser | None = None

@@ -9,11 +9,11 @@ from collections.abc import AsyncIterator
 from uuid import uuid4
 
 from fastapi import APIRouter, Header, HTTPException, Request
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from src.api.auth import current_user, require_project_access, require_run_access, require_user
-from src.auth import AuthStatus, ProjectRole, get_auth_store
+from src.auth import AuthStatus, DesktopAuthorizationStart, DesktopAuthorizationStatus, ProjectRole, get_auth_store
 from src.auth.github import GitHubOAuth, GitHubOAuthError
 from src.config import get_settings
 from src.events import get_event_broker
@@ -50,6 +50,11 @@ from src.workspace import (
 )
 
 router = APIRouter(prefix="/v1")
+
+class DesktopAuthorizationClaim(BaseModel):
+    session_token: str
+    user: dict
+
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=20000)
@@ -113,6 +118,49 @@ async def auth_status(request: Request):
     return AuthStatus(authenticated=user is not None, user=user, github_configured=bool(settings.github_oauth_client_id and settings.github_oauth_client_secret))
 
 
+@router.post("/auth/desktop/start", response_model=DesktopAuthorizationStart, status_code=201)
+async def start_desktop_authorization():
+    oauth = GitHubOAuth(get_auth_store(get_run_store()))
+    try:
+        request_id, request_secret, authorize_url, expires_at = await oauth.desktop_authorization_url()
+        return DesktopAuthorizationStart(
+            request_id=request_id,
+            request_secret=request_secret,
+            authorize_url=authorize_url,
+            expires_at=expires_at,
+        )
+    except GitHubOAuthError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/auth/desktop/{request_id}", response_model=DesktopAuthorizationStatus)
+async def desktop_authorization_status(
+    request_id: str,
+    x_desktop_authorization: str | None = Header(default=None, alias="X-Desktop-Authorization"),
+):
+    if not x_desktop_authorization:
+        raise HTTPException(status_code=401, detail="Desktop authorization secret is required")
+    result = await get_auth_store(get_run_store()).desktop_authorization_status(request_id, x_desktop_authorization)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Desktop authorization request was not found")
+    status, expires_at, user = result
+    return DesktopAuthorizationStatus(status=status, expires_at=expires_at, user=user)
+
+
+@router.post("/auth/desktop/{request_id}/claim", response_model=DesktopAuthorizationClaim)
+async def claim_desktop_authorization(
+    request_id: str,
+    x_desktop_authorization: str | None = Header(default=None, alias="X-Desktop-Authorization"),
+):
+    if not x_desktop_authorization:
+        raise HTTPException(status_code=401, detail="Desktop authorization secret is required")
+    result = await get_auth_store(get_run_store()).claim_desktop_authorization(request_id, x_desktop_authorization)
+    if result is None:
+        raise HTTPException(status_code=409, detail="Desktop authorization is not ready or has already been claimed")
+    token, user = result
+    return DesktopAuthorizationClaim(session_token=token, user=user.model_dump(mode="json"))
+
+
 @router.get("/auth/github/login")
 async def github_login():
     oauth = GitHubOAuth(get_auth_store(get_run_store()))
@@ -125,15 +173,26 @@ async def github_login():
 @router.get("/auth/github/callback")
 async def github_callback(code: str, state: str):
     settings = get_settings()
-    oauth = GitHubOAuth(get_auth_store(get_run_store()))
+    auth_store = get_auth_store(get_run_store())
+    desktop_request_id = await auth_store.desktop_request_for_state(state)
+    oauth = GitHubOAuth(auth_store)
     try:
         profile = await oauth.callback(code, state)
     except (GitHubOAuthError, httpx.HTTPError) as exc:
         raise HTTPException(status_code=401, detail="GitHub authentication failed") from exc
-    auth_store = get_auth_store(get_run_store())
     user = await auth_store.upsert_user(profile)
     await workspace_store().ensure_default_project()
     await auth_store.claim_unowned_default(user.id)
+    if desktop_request_id:
+        if not await auth_store.complete_desktop_authorization(desktop_request_id, user.id):
+            raise HTTPException(status_code=409, detail="Desktop authorization has expired or was already completed")
+        return HTMLResponse(
+            "<main style='font-family:system-ui;max-width:42rem;margin:10vh auto;padding:2rem;line-height:1.55'>"
+            "<h1>Agent Room is connected</h1>"
+            "<p>You can return to the Agent Room desktop application. This browser did not receive a desktop session credential.</p>"
+            "<p style='color:#52606d'>You may safely close this tab.</p></main>",
+            status_code=200,
+        )
     token = await auth_store.create_session(user.id)
     frontend_url = settings.frontend_origins.split(",")[1] if "," in settings.frontend_origins else settings.frontend_origins
     response = RedirectResponse(frontend_url, status_code=302)

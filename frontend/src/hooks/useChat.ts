@@ -37,7 +37,7 @@ export function useChat() {
     setLoading(true)
     setMessages((current) => [...current, { id: `user-${Date.now()}`, role: 'user', content: message, timestamp: new Date().toISOString() }])
     try {
-      const response = await fetch(`${apiUrl.replace(/\/$/, '')}/v1/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message }) })
+      const response = await fetch(`${apiUrl.replace(/\/$/, '')}/v1/chat`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message }) })
       if (!response.ok) throw new Error(`Request failed with ${response.status}`)
       const data = await response.json() as ChatResponse
       setRunId(data.run_id)

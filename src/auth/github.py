@@ -35,10 +35,7 @@ class GitHubOAuth:
     def configured(self) -> bool:
         return bool(self.settings.github_oauth_client_id and self.settings.github_oauth_client_secret)
 
-    async def authorization_url(self) -> str:
-        if not self.configured:
-            raise GitHubOAuthError("GitHub OAuth is not configured")
-        state, verifier = await self.store.create_oauth_state()
+    def _authorization_url(self, state: str, verifier: str) -> str:
         query = urlencode(
             {
                 "client_id": self.settings.github_oauth_client_id,
@@ -51,6 +48,18 @@ class GitHubOAuth:
             }
         )
         return f"{self.authorize_url}?{query}"
+
+    async def authorization_url(self) -> str:
+        if not self.configured:
+            raise GitHubOAuthError("GitHub OAuth is not configured")
+        state, verifier = await self.store.create_oauth_state()
+        return self._authorization_url(state, verifier)
+
+    async def desktop_authorization_url(self) -> tuple[str, str, str, str]:
+        if not self.configured:
+            raise GitHubOAuthError("GitHub OAuth is not configured")
+        request_id, request_secret, state, verifier, expires_at = await self.store.create_desktop_authorization()
+        return request_id, request_secret, self._authorization_url(state, verifier), expires_at
 
     async def callback(self, code: str, state: str) -> GitHubProfile:
         if not self.configured:

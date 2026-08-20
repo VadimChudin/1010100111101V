@@ -1,0 +1,62 @@
+{
+  "name": "agent-room-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Agent Room paired local runtime desktop test client",
+  "homepage": "https://github.com/VadimChudin/1010100111101V",
+  "repository": { "type": "git", "url": "https://github.com/VadimChudin/1010100111101V.git" },
+  "author": { "name": "Agent Room", "email": "maintainers@agentroom.im" },
+  "type": "module",
+  "main": "main.mjs",
+  "scripts": {
+    "dev": "electron .",
+    "start": "electron .",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.mjs",
+    "build:dir": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^35.1.5",
+    "electron-builder": "^26.0.12",
+    "typescript": "^5.6.3"
+  },
+  "build": {
+    "appId": "im.agentroom.desktop",
+    "productName": "Agent Room",
+    "asar": true,
+    "files": [
+      "main.mjs",
+      "preload.mjs",
+      "renderer/**/*",
+      "runtime/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../local-runtime/installer",
+        "to": "runtime-installer",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "../local-runtime/compose.graphiti.yml",
+        "to": "compose.graphiti.yml"
+      }
+    ],
+    "win": {
+      "target": ["nsis"],
+      "artifactName": "Agent-Room-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "artifactName": "Agent-Room-${version}.${ext}",
+      "category": "Development",
+      "maintainer": "Agent Room <maintainers@agentroom.im>"
+    }
+  }
+}
