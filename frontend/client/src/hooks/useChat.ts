@@ -5,7 +5,7 @@ import type { AgentEvent, AgentPlan, AgentStage, ApprovalGrantScope, ApprovalMod
 const initialMessage: ChatMessage = {
   id: 'intro',
   role: 'assistant',
-  content: 'Send a brief and I will turn it into a visible run. You will see the plan, tool calls, and review states as they happen.',
+  content: 'Здравствуйте. Я помогу разобраться с проектом, обсудить идею или подготовить работу над кодом — в удобном для вас темпе.',
   timestamp: new Date().toISOString(),
   stage: 'idle',
 }
@@ -157,9 +157,11 @@ export function useChat() {
     try {
       const response = await fetch(`${apiUrl.replace(/\/$/, '')}/v1/runs`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, approval_mode: approvalMode }) })
       if (!response.ok) throw new Error(`Request failed with ${response.status}`)
-      const data = await response.json() as RunSubmission
+      const data = await response.json() as RunSubmission & { mode?: 'chat' | 'project' }
       setRunId(data.run_id)
-      setMessages((current) => [...current, { id: `queued-${Date.now()}`, role: 'assistant', content: 'Run queued. Connecting to the live execution timeline.', timestamp: new Date().toISOString(), runId: data.run_id, stage: 'planning' }])
+      if (data.mode === 'project') {
+        setMessages((current) => [...current, { id: `project-${Date.now()}`, role: 'assistant', content: 'Понял. Сначала соберу контекст и уточню важные детали, затем предложу следующий шаг.', timestamp: new Date().toISOString(), runId: data.run_id, stage: 'planning' }])
+      }
 
       const source = new EventSource(`${apiUrl.replace(/\/$/, '')}/v1/runs/${data.run_id}/stream`, { withCredentials: true })
       source.addEventListener('timeline', (transportEvent) => {

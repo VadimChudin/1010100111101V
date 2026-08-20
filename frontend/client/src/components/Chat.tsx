@@ -1,64 +1,80 @@
-// Dark Mission Control: the chat rail is the operator's narrative view of an active run.
-import { FormEvent, useEffect, useRef, useState } from 'react'
-import { ArrowUp, Check, Circle, FilePlus2, ListPlus, Loader2, Radio, RotateCw, Sparkles, Wrench } from 'lucide-react'
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowUp, Check, Loader2, Paperclip, ShieldCheck, Sparkles } from 'lucide-react'
 import ApprovalCards from './ApprovalCards'
 import MessageBubble from './MessageBubble'
 import type { AgentEvent, AgentStage, ApprovalGrantScope, ApprovalMode, ApprovalRequest, ChatMessage, PlanStep } from '../types'
 
-const stageMeta: Array<{ key: AgentStage; label: string; icon: typeof Sparkles }> = [
-  { key: 'planning', label: 'Plan', icon: Sparkles },
-  { key: 'executing', label: 'Tools', icon: Wrench },
-  { key: 'review', label: 'Review', icon: RotateCw },
-  { key: 'completed', label: 'Done', icon: Check },
-]
+function activityCopy(stage: AgentStage, events: AgentEvent[], loading: boolean) {
+  if (!loading) return null
+  const latest = events.at(-1)
+  if (latest?.type === 'conversation.started') return 'Thinking through your message'
+  if (latest?.type === 'conversation.completed') return 'Preparing a concise answer'
+  if (latest?.type === 'plan.created') return 'Understanding the project task'
+  if (latest?.type === 'tool.result') return 'Checking the workspace result'
+  if (latest?.type === 'approval.requested') return 'Waiting for your decision'
+  if (stage === 'planning') return 'Understanding your request'
+  if (stage === 'executing') return 'Working with the project'
+  if (stage === 'review') return 'Reviewing the result'
+  return 'Working quietly in the background'
+}
 
-export default function Chat({ messages, plan, events, approvals, loading, error, stage, connected, runId, moduleTitle, onSend, onApprovalDecision, onCaptureNote, onCaptureTask, approvalMode, onApprovalModeChange }: { messages: ChatMessage[]; plan: PlanStep[]; events: AgentEvent[]; approvals: ApprovalRequest[]; loading: boolean; error?: string; stage: AgentStage; connected: boolean; runId?: string; moduleTitle?: string; onSend: (message: string) => void; onApprovalDecision: (approvalId: string, approved: boolean, grantScope: ApprovalGrantScope) => void; onCaptureNote: (runId: string, title: string, content: string) => Promise<void>; onCaptureTask: (runId: string, title: string, description: string) => Promise<void>; approvalMode: ApprovalMode; onApprovalModeChange: (mode: ApprovalMode) => void }) {
+export default function Chat({ messages, plan: _plan, events, approvals, loading, error, stage, connected, runId, moduleTitle, onSend, onApprovalDecision, onCaptureNote, onCaptureTask, approvalMode, onApprovalModeChange }: { messages: ChatMessage[]; plan: PlanStep[]; events: AgentEvent[]; approvals: ApprovalRequest[]; loading: boolean; error?: string; stage: AgentStage; connected: boolean; runId?: string; moduleTitle?: string; onSend: (message: string) => void; onApprovalDecision: (approvalId: string, approved: boolean, grantScope: ApprovalGrantScope) => void; onCaptureNote: (runId: string, title: string, content: string) => Promise<void>; onCaptureTask: (runId: string, title: string, description: string) => Promise<void>; approvalMode: ApprovalMode; onApprovalModeChange: (mode: ApprovalMode) => void }) {
   const [draft, setDraft] = useState('')
   const [captureState, setCaptureState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [attachmentName, setAttachmentName] = useState<string>()
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
-  useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }) }, [messages, events])
-  const submit = (event: FormEvent) => { event.preventDefault(); if (draft.trim()) { onSend(draft); setDraft('') } }
-  const activeIndex = stage === 'idle' ? -1 : stageMeta.findIndex((item) => item.key === stage)
-  const latestAnswer = [...messages].reverse().find((message) => message.role === 'assistant' && message.runId === runId)?.content || 'Run completed. Review the timeline for the full result.'
-  const capture = async (kind: 'note' | 'task') => {
-    if (!runId || loading) return
-    setCaptureState('saving')
-    const title = `Run context: ${plan[0]?.title || 'Agent review'}`
-    try {
-      if (kind === 'note') await onCaptureNote(runId, title, latestAnswer)
-      else await onCaptureTask(runId, `Follow up: ${plan[0]?.title || 'Agent review'}`, latestAnswer)
-      setCaptureState('saved')
-    } catch { setCaptureState('error') }
+  const status = useMemo(() => activityCopy(stage, events, loading), [events, loading, stage])
+
+  useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }) }, [messages, events, approvals])
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault()
+    if (!draft.trim() || loading) return
+    onSend(draft)
+    setDraft('')
+    setAttachmentName(undefined)
   }
 
-  return (
-    <section className="flex min-h-[620px] flex-1 flex-col overflow-hidden border-r border-white/[0.08] bg-[#0c1117]/90 lg:min-w-[390px] lg:max-w-[540px]">
-      <div className="border-b border-white/[0.08] px-5 py-4 sm:px-7">
-        <div className="flex items-start justify-between gap-4">
-          <div><p className="eyebrow">Conversation rail</p><h2 className="mt-1 font-display text-xl font-semibold tracking-[-0.03em] text-white">Run narrative</h2></div>
-          <div className={`flex items-center gap-2 rounded-full border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.12em] ${connected ? 'border-complete/25 bg-complete/10 text-complete' : 'border-alert/25 bg-alert/10 text-alert'}`}><span className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-complete live-dot' : 'bg-alert'}`} />{connected ? 'Live link' : 'Reconnecting'}</div>
-        </div>
-        <label className="mt-4 flex items-center justify-between gap-3 font-mono text-[9px] uppercase tracking-[0.12em] text-text-dim"><span>Approval mode</span><select value={approvalMode} onChange={(event) => onApprovalModeChange(event.target.value as ApprovalMode)} disabled={loading} className="max-w-[220px] rounded border border-white/10 bg-[#0a0e13] px-2 py-1 text-[10px] text-white outline-none disabled:opacity-50"><option value="plan">Plan · read only</option><option value="confirm_each">Confirm each action</option><option value="allow_workspace_edits">Allow workspace edits</option><option value="smart_development">Smart development</option><option value="all_approvals_for_run">All approvals for this run</option></select></label>
-        <div className="mt-5 flex items-center gap-1">
-          {stageMeta.map((item, index) => { const done = activeIndex > index || stage === 'completed'; const active = activeIndex === index; return <div key={item.key} className="flex min-w-0 flex-1 items-center gap-1.5"><div className={`relative grid h-8 w-8 shrink-0 place-items-center rounded-full border font-mono text-[10px] font-semibold ${done ? 'border-complete/40 bg-complete/10 text-complete' : active ? 'border-signal-ice/60 bg-signal-ice/10 text-signal-ice' : 'border-white/10 text-text-dim'}`}>{done ? <Check size={13} /> : active && loading ? <Loader2 size={13} className="animate-spin" /> : `0${index + 1}`}{active && <span className="absolute -inset-1 rounded-full border border-signal-ice/20 signal-pulse" />}</div><span className={`hidden truncate font-mono text-[10px] uppercase tracking-[0.12em] sm:inline ${active ? 'text-white' : 'text-text-dim'}`}>{item.label}</span>{index < stageMeta.length - 1 && <div className={`mx-1 h-px flex-1 ${done ? 'bg-complete/30' : 'bg-white/10'}`} />}</div> })}
-        </div>
-      </div>
-      <div ref={scrollRef} className="scrollbar-thin flex-1 space-y-5 overflow-y-auto px-5 py-6 sm:px-7">
+  const latestAnswer = [...messages].reverse().find((message) => message.role === 'assistant' && message.runId === runId)?.content || ''
+  const capture = async (kind: 'note' | 'task') => {
+    if (!runId || loading || !latestAnswer) return
+    setCaptureState('saving')
+    try {
+      if (kind === 'note') await onCaptureNote(runId, 'Conversation decision', latestAnswer)
+      else await onCaptureTask(runId, 'Follow up from conversation', latestAnswer)
+      setCaptureState('saved')
+    } catch {
+      setCaptureState('error')
+    }
+  }
+
+  const askBeforeChanges = approvalMode === 'confirm_each' || approvalMode === 'plan'
+  return <section className="flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent">
+    <div className="mx-auto flex w-full max-w-[760px] items-center justify-between gap-4 px-5 pt-7 sm:px-8 sm:pt-10">
+      <div><p className="font-mono text-[9px] uppercase tracking-[0.15em] text-signal-ice">Conversation</p><p className="mt-1 text-sm text-text-dim">{moduleTitle ? `Project context: ${moduleTitle}` : 'Ask a question or describe work for the project.'}</p></div>
+      <div className={`flex shrink-0 items-center gap-2 rounded-full border px-2.5 py-1.5 font-mono text-[9px] uppercase tracking-[0.1em] ${connected ? 'border-emerald-300/20 bg-emerald-300/[0.06] text-emerald-200' : 'border-amber-300/20 bg-amber-300/[0.06] text-amber-200'}`}><span className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-emerald-300 live-dot' : 'bg-amber-300'}`} />{connected ? 'Live' : 'Reconnecting'}</div>
+    </div>
+
+    <div ref={scrollRef} className="scrollbar-thin flex-1 overflow-y-auto px-5 pb-5 pt-9 sm:px-8">
+      <div className="mx-auto flex w-full max-w-[760px] flex-col gap-5">
         {messages.map((message) => <MessageBubble key={message.id} message={message} />)}
-        {loading && <div className="flex items-center gap-3 text-text-dim"><div className="grid h-8 w-8 place-items-center rounded-[10px] border border-signal-ice/20 bg-signal-ice/10 text-signal-ice"><Loader2 size={15} className="animate-spin" /></div><div className="font-mono text-[11px] uppercase tracking-[0.12em]">Agent is working<span className="typing-dots">...</span></div></div>}
-        <ApprovalCards approvals={approvals} onDecision={onApprovalDecision} />
-        {runId && !loading && <section className="border-t border-white/[0.07] pt-5"><div className="flex items-center justify-between gap-3"><div><p className="font-mono text-[10px] uppercase tracking-[0.14em] text-signal-ice">Run to context</p><p className="mt-1 text-xs text-text-muted">Save this outcome to {moduleTitle || 'the selected workspace module'}.</p></div>{captureState === 'saved' && <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-complete">Captured</span>}</div><div className="mt-3 grid grid-cols-2 gap-2"><button type="button" disabled={captureState === 'saving'} onClick={() => void capture('note')} className="inline-flex items-center justify-center gap-2 rounded-lg border border-signal-ice/25 bg-signal-ice/10 px-3 py-2 font-mono text-[10px] uppercase tracking-[0.1em] text-signal-ice disabled:opacity-50"><FilePlus2 size={13} />Save note</button><button type="button" disabled={captureState === 'saving'} onClick={() => void capture('task')} className="inline-flex items-center justify-center gap-2 rounded-lg border border-white/10 px-3 py-2 font-mono text-[10px] uppercase tracking-[0.1em] text-text-muted hover:text-white disabled:opacity-50"><ListPlus size={13} />Create task</button></div>{captureState === 'error' && <p className="mt-2 text-xs text-alert">Could not save the run context. Try again.</p>}</section>}
-        {events.length > 0 && <div className="border-t border-white/[0.07] pt-5"><div className="mb-3 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.16em] text-text-dim"><Radio size={12} className="text-signal-ice" /> Event trace</div><div className="space-y-2">{events.slice(-5).map((event, index) => <div key={event.id || index} className="flex gap-3 text-[11px] text-text-muted"><Circle size={7} className="mt-1.5 shrink-0 text-signal-ice" /><span>{event.message || event.content || event.text || 'Agent event received'}</span></div>)}</div></div>}
+        {status && <div className="flex items-center gap-3 pl-1 text-text-dim"><div className="grid h-7 w-7 place-items-center rounded-lg border border-signal-ice/20 bg-signal-ice/[0.08] text-signal-ice"><Loader2 size={13} className="animate-spin" /></div><p className="font-mono text-[10px] uppercase tracking-[0.11em]">{status}<span className="typing-dots">...</span></p></div>}
+        {approvals.length > 0 && <div className="rounded-2xl border border-amber-300/20 bg-amber-300/[0.05] p-4"><div className="mb-3 flex items-center gap-2"><ShieldCheck size={14} className="text-amber-200" /><p className="font-mono text-[10px] uppercase tracking-[0.12em] text-amber-100">Your decision is needed</p></div><ApprovalCards approvals={approvals} onDecision={onApprovalDecision} /></div>}
+        {runId && !loading && latestAnswer && <div className="flex flex-wrap items-center gap-2 border-t border-white/[0.07] pt-5"><span className="mr-1 font-mono text-[9px] uppercase tracking-[0.12em] text-text-dim">Save context</span><button type="button" disabled={captureState === 'saving'} onClick={() => void capture('note')} className="rounded-lg border border-white/[0.1] px-3 py-1.5 text-xs text-text-muted transition-colors hover:border-signal-ice/30 hover:text-white disabled:opacity-50">Save decision</button><button type="button" disabled={captureState === 'saving'} onClick={() => void capture('task')} className="rounded-lg border border-white/[0.1] px-3 py-1.5 text-xs text-text-muted transition-colors hover:border-signal-ice/30 hover:text-white disabled:opacity-50">Create follow-up</button>{captureState === 'saved' && <span className="flex items-center gap-1 font-mono text-[9px] uppercase tracking-[0.1em] text-emerald-300"><Check size={11} />Saved</span>}{captureState === 'error' && <span className="font-mono text-[9px] uppercase tracking-[0.1em] text-rose-300">Could not save</span>}</div>}
       </div>
-      <div className="border-t border-white/[0.08] bg-[#0a0e13]/70 px-5 py-4 sm:px-7">
-        {error && <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.1em] text-alert">{error}</p>}
-        {runId && <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.1em] text-text-dim">Active run · {runId.slice(0, 18)}</p>}
-        <form onSubmit={submit} className="flex items-end gap-2 rounded-[14px] border border-white/[0.12] bg-white/[0.045] p-2 transition-colors focus-within:border-signal-ice/40 focus-within:bg-white/[0.065]">
-          <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submit(event) } }} placeholder="Describe what the agent should do..." rows={2} className="min-h-[46px] flex-1 resize-none bg-transparent px-2 py-1 text-sm leading-6 text-white outline-none placeholder:text-text-dim" aria-label="Message the agent" />
-          <button type="submit" disabled={loading || !draft.trim()} className="grid h-10 w-10 shrink-0 place-items-center rounded-[10px] bg-signal-ice text-[#071017] transition-transform hover:bg-white active:scale-95 disabled:cursor-not-allowed disabled:opacity-30" aria-label="Send message"><ArrowUp size={17} strokeWidth={2.5} /></button>
+    </div>
+
+    <div className="border-t border-white/[0.08] bg-[#101216]/78 px-5 pb-5 pt-4 backdrop-blur-xl sm:px-8 sm:pb-7">
+      <div className="mx-auto w-full max-w-[760px]">
+        <div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><Sparkles size={13} className="text-signal-ice" /><span className="font-mono text-[9px] uppercase tracking-[0.12em] text-text-dim">Change policy</span></div><div className="flex rounded-lg border border-white/[0.1] bg-black/10 p-0.5"><button type="button" onClick={() => onApprovalModeChange('confirm_each')} className={`rounded-md px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.1em] transition-colors ${askBeforeChanges ? 'bg-white/[0.1] text-white' : 'text-text-dim hover:text-white'}`}>Ask first</button><button type="button" onClick={() => onApprovalModeChange('allow_workspace_edits')} className={`rounded-md px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.1em] transition-colors ${!askBeforeChanges ? 'bg-emerald-300/[0.13] text-emerald-200' : 'text-text-dim hover:text-white'}`}>Green light</button></div></div>
+        {error && <p className="mb-3 rounded-lg border border-rose-300/20 bg-rose-300/[0.07] px-3 py-2 text-xs text-rose-200">{error}</p>}
+        <form onSubmit={submit} className="rounded-2xl border border-white/[0.13] bg-white/[0.045] p-2 transition-colors focus-within:border-signal-ice/40 focus-within:bg-white/[0.07]">
+          <div className="flex items-end gap-2"><input ref={fileInputRef} type="file" className="hidden" onChange={(event) => setAttachmentName(event.target.files?.[0]?.name)} /><button type="button" aria-label="Attach a local file" title="Attach a local file" onClick={() => fileInputRef.current?.click()} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-text-dim transition-colors hover:bg-white/[0.07] hover:text-white"><Paperclip size={17} /></button><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submit(event) } }} placeholder="Message Agent Room…" rows={2} className="min-h-[48px] flex-1 resize-none bg-transparent px-1 py-2 text-sm leading-6 text-white outline-none placeholder:text-text-dim" aria-label="Message the agent" /><button type="submit" disabled={loading || !draft.trim()} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-signal-ice text-[#0a1115] transition-all hover:bg-white active:scale-95 disabled:cursor-not-allowed disabled:opacity-30" aria-label="Send message"><ArrowUp size={17} strokeWidth={2.5} /></button></div>
+          {attachmentName && <p className="mx-2 mt-1.5 truncate font-mono text-[9px] uppercase tracking-[0.1em] text-text-dim">Attached locally: {attachmentName}</p>}
         </form>
-        <p className="mt-2 text-[10px] text-text-dim">Press Enter to send · Shift + Enter for a new line</p>
+        <p className="mt-2 px-1 text-[10px] text-text-dim">Enter to send · Shift + Enter for a new line · Local files stay on this device until a task needs them.</p>
       </div>
-    </section>
-  )
+    </div>
+  </section>
 }

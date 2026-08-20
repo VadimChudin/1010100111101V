@@ -497,13 +497,13 @@ class WorkspaceStore:
                 raise LookupError("Module not found in project")
             connection.execute(
                 "INSERT INTO workspace_tasks (id, project_id, module_id, title, description, acceptance_criteria_json, status, priority, source_run_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (task_id, project_id, request.module_id, request.title, request.description, json.dumps(request.acceptance_criteria), TaskStatus.TODO, request.priority, request.source_run_id, timestamp, timestamp),
+                (task_id, project_id, request.module_id, request.title, request.description, json.dumps(request.acceptance_criteria), TaskStatus.CLARIFYING, request.priority, request.source_run_id, timestamp, timestamp),
             )
             connection.execute(
                 "INSERT INTO module_markers (id, project_id, module_id, type, title, state, source_kind, source_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (new_id(), project_id, request.module_id, MarkerType.TASK, request.title, "open", "task", task_id, timestamp),
             )
-        return WorkspaceTask(id=task_id, project_id=project_id, status=TaskStatus.TODO, created_at=timestamp, updated_at=timestamp, **request.model_dump())
+        return WorkspaceTask(id=task_id, project_id=project_id, status=TaskStatus.CLARIFYING, created_at=timestamp, updated_at=timestamp, **request.model_dump())
 
     async def create_task(self, project_id: str, request: TaskCreateRequest) -> WorkspaceTask:
         await self.initialize()

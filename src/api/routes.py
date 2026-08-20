@@ -17,10 +17,10 @@ from src.auth import AuthStatus, DesktopAuthorizationStart, DesktopAuthorization
 from src.auth.github import GitHubOAuth, GitHubOAuthError
 from src.config import get_settings
 from src.events import get_event_broker
+from src.orchestrator.conversation import requires_project_work, run_conversation, run_project_clarification
 from src.orchestrator.graph import run_agent
 from src.orchestrator.schemas import AgentPlan
 from src.policy import ApprovalDecisionRequest, ApprovalMode, ToolCallRequest, ToolCallResponse
-from src.queueing import RunJob, RunWorker, get_run_queue
 from src.storage import get_run_store
 from src.tools.gateway import ToolGateway
 from src.tools.serena import SerenaClient
@@ -531,23 +531,83 @@ async def chat(payload: ChatRequest, request: Request):
         raise HTTPException(status_code=502, detail="The agent run could not be completed.") from exc
 
 
+async def execute_conversation_run(run_id: str, message: str) -> None:
+    """Persist a direct low-cost chat answer through the same durable event stream."""
+    store = get_run_store()
+
+    async def event_sink(event: dict) -> None:
+        await store.append_events(run_id, [event])
+        get_event_broker().publish(run_id)
+
+    await event_sink({"type": "run.started", "payload": {"run_id": run_id, "mode": "chat"}})
+    try:
+        answer, model = await run_conversation(message, run_id, event_sink)
+        plan = {"goal": message, "steps": [], "acceptance_criteria": []}
+        await store.complete_run(run_id, "completed", answer, plan)
+        await event_sink(
+            {
+                "type": "run.completed",
+                "payload": {
+                    "status": "completed",
+                    "mode": "chat",
+                    "model": model,
+                    "review": {"approved": True, "comment": answer},
+                },
+            }
+        )
+    except Exception:
+        await store.complete_run(run_id, "failed", "", None)
+        await event_sink({"type": "run.failed", "payload": {"message": "The chat response could not be completed."}})
+
+
+async def execute_project_clarification_run(run_id: str, message: str) -> None:
+    """Return the first clarification response before a task can become executable work."""
+    store = get_run_store()
+
+    async def event_sink(event: dict) -> None:
+        await store.append_events(run_id, [event])
+        get_event_broker().publish(run_id)
+
+    await event_sink({"type": "run.started", "payload": {"run_id": run_id, "mode": "clarification"}})
+    try:
+        answer, model = await run_project_clarification(message, run_id, event_sink)
+        plan = {"goal": message, "steps": [], "acceptance_criteria": []}
+        await store.complete_run(run_id, "completed", answer, plan)
+        await event_sink(
+            {
+                "type": "run.completed",
+                "payload": {
+                    "status": "completed",
+                    "mode": "clarification",
+                    "model": model,
+                    "task_state": "clarifying",
+                    "review": {"approved": True, "comment": answer},
+                },
+            }
+        )
+    except Exception:
+        await store.complete_run(run_id, "failed", "", None)
+        await event_sink({"type": "run.failed", "payload": {"message": "The project clarification could not be completed."}})
+
+
 @router.post("/runs")
 async def create_run(payload: ChatRequest, request: Request):
     user = await require_user(request)
     run_id = str(uuid4())
     store = get_run_store()
+    project_mode = requires_project_work(payload.message)
     await store.create_run(run_id, user.id, payload.message)
-    await store.append_events(run_id, [{"type": "run.created", "payload": {"approval_mode": payload.approval_mode}}])
-    job = RunJob(run_id=run_id, user_id=user.id, task=payload.message)
-    queue = get_run_queue()
-    try:
-        await queue.enqueue(job)
-    except Exception as exc:
-        await store.complete_run(run_id, "failed", "", None)
-        await store.append_events(run_id, [{"type": "run.failed", "payload": {"message": "The run could not be queued."}}])
-        raise HTTPException(status_code=503, detail="The run queue is unavailable.") from exc
-    asyncio.create_task(RunWorker(queue, store).execute(job), name=f"agent-run-{run_id}")
-    return {"run_id": run_id, "status": "queued", "task": payload.message}
+    await store.append_events(
+        run_id,
+        [{"type": "run.created", "payload": {"approval_mode": payload.approval_mode, "mode": "project" if project_mode else "chat"}}],
+    )
+
+    if not project_mode:
+        asyncio.create_task(execute_conversation_run(run_id, payload.message), name=f"conversation-run-{run_id}")
+        return {"run_id": run_id, "status": "queued", "task": payload.message, "mode": "chat"}
+
+    asyncio.create_task(execute_project_clarification_run(run_id, payload.message), name=f"project-clarification-{run_id}")
+    return {"run_id": run_id, "status": "queued", "task": payload.message, "mode": "project"}
 
 
 @router.post("/runs/{run_id}/tool-calls", response_model=ToolCallResponse)

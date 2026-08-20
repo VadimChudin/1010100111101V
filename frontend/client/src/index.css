@@ -1,49 +1,48 @@
-/* Dark Mission Control: global visual contract — graphite base, Signal Ice focus, telemetry texture, purposeful motion. */
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 @import 'tailwindcss';
 @import '@xyflow/react/dist/style.css';
 
 @theme {
-  --font-display: 'Space Grotesk', sans-serif;
-  --font-mono: 'IBM Plex Mono', monospace;
-  --color-signal-ice: #9de8ff;
-  --color-complete: #7de2b3;
-  --color-alert: #f2b35d;
-  --color-text-muted: #b3c0ca;
-  --color-text-dim: #6d7b86;
+  --font-display: 'Inter', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+  --color-signal-ice: #9fe8ff;
+  --color-complete: #8be1b7;
+  --color-alert: #f0bc72;
+  --color-text-muted: #bec6cf;
+  --color-text-dim: #79838f;
 }
 
-:root { font-family: 'Space Grotesk', sans-serif; color: #f5f8fa; background: #080c11; font-synthesis: none; text-rendering: optimizeLegibility; }
+:root { font-family: 'Inter', sans-serif; color: #f5f1e8; background: #0b0d10; font-synthesis: none; text-rendering: optimizeLegibility; }
 * { box-sizing: border-box; }
 html, body, #root { min-height: 100%; margin: 0; }
-body { min-width: 320px; background: #080c11; }
+body { min-width: 320px; background: #0b0d10; }
 button, textarea { font: inherit; }
 button { cursor: pointer; }
-::selection { background: rgba(157, 232, 255, .28); }
+::selection { background: rgba(159, 232, 255, .28); }
 
-.eyebrow { color: #6d7b86; font: 500 10px/1 'IBM Plex Mono', monospace; letter-spacing: .16em; text-transform: uppercase; }
-.logo-mark { position: relative; display: grid; width: 32px; height: 32px; place-items: center; border: 1px solid rgba(157,232,255,.55); border-radius: 10px; background: linear-gradient(135deg, rgba(157,232,255,.15), rgba(157,232,255,.02)); box-shadow: 0 0 24px rgba(157,232,255,.08); }
-.logo-mark::before, .logo-mark::after { position: absolute; width: 10px; height: 10px; content: ''; border: 1px solid #9de8ff; }
+.eyebrow { color: #79838f; font: 500 9px/1 'JetBrains Mono', monospace; letter-spacing: .15em; text-transform: uppercase; }
+.logo-mark { position: relative; display: grid; width: 32px; height: 32px; place-items: center; border: 1px solid rgba(159,232,255,.58); border-radius: 10px; background: linear-gradient(135deg, rgba(159,232,255,.14), rgba(159,232,255,.025)); box-shadow: 0 0 28px rgba(159,232,255,.06); }
+.logo-mark::before, .logo-mark::after { position: absolute; width: 9px; height: 9px; content: ''; border: 1px solid #9fe8ff; }
 .logo-mark::before { top: 6px; left: 6px; border-right: 0; border-bottom: 0; }
-.logo-mark::after { right: 6px; bottom: 6px; border-top: 0; border-left: 0; border-color: #f2b35d; }
-.logo-mark span { width: 5px; height: 5px; border-radius: 50%; background: #9de8ff; box-shadow: 0 0 12px #9de8ff; }
+.logo-mark::after { right: 6px; bottom: 6px; border-top: 0; border-left: 0; border-color: #e7dfd1; }
+.logo-mark span { width: 4px; height: 4px; border-radius: 50%; background: #9fe8ff; box-shadow: 0 0 12px #9fe8ff; }
 
-.react-flow { background: radial-gradient(circle at 58% 44%, rgba(157,232,255,.04), transparent 33%), #0a0e13; }
+.react-flow { background: radial-gradient(circle at 55% 38%, rgba(159,232,255,.05), transparent 33%), #0d0f13; }
 .react-flow__controls { overflow: hidden; border: 1px solid rgba(255,255,255,.1) !important; border-radius: 10px !important; box-shadow: none !important; }
-.react-flow__controls-button { width: 27px !important; height: 27px !important; border: 0 !important; border-bottom: 1px solid rgba(255,255,255,.08) !important; background: #111922 !important; fill: #9aaab5 !important; }
-.react-flow__controls-button:hover { background: #1d2a34 !important; fill: #fff !important; }
-.react-flow__minimap { overflow: hidden; border: 1px solid rgba(255,255,255,.1); border-radius: 10px; background: rgba(14,22,29,.9); }
-.graph-node { width: 235px; padding: 14px; border: 1px solid rgba(255,255,255,.12); border-radius: 13px; background: linear-gradient(135deg, rgba(24,35,44,.98), rgba(12,18,24,.98)); box-shadow: 0 14px 32px rgba(0,0,0,.24); transition: border-color .2s ease, box-shadow .2s ease, transform .2s ease; }
-.graph-node:hover { border-color: rgba(157,232,255,.45); transform: translateY(-2px); }
-.graph-node-active { border-color: rgba(157,232,255,.72); box-shadow: 0 0 0 4px rgba(157,232,255,.08), 0 14px 34px rgba(0,0,0,.28); }
-.graph-node-completed { border-color: rgba(125,226,179,.45); }
+.react-flow__controls-button { width: 27px !important; height: 27px !important; border: 0 !important; border-bottom: 1px solid rgba(255,255,255,.08) !important; background: #16191e !important; fill: #a8b1bb !important; }
+.react-flow__controls-button:hover { background: #22262d !important; fill: #fff !important; }
+.react-flow__minimap { overflow: hidden; border: 1px solid rgba(255,255,255,.1); border-radius: 10px; background: rgba(16,18,22,.92); }
+.graph-node { width: 235px; padding: 14px; border: 1px solid rgba(255,255,255,.12); border-radius: 13px; background: linear-gradient(135deg, rgba(27,30,36,.98), rgba(17,19,23,.98)); box-shadow: 0 14px 32px rgba(0,0,0,.24); transition: border-color .2s ease, box-shadow .2s ease, transform .2s ease; }
+.graph-node:hover { border-color: rgba(159,232,255,.45); transform: translateY(-2px); }
+.graph-node-active { border-color: rgba(159,232,255,.72); box-shadow: 0 0 0 4px rgba(159,232,255,.08), 0 14px 34px rgba(0,0,0,.28); }
+.graph-node-completed { border-color: rgba(139,225,183,.45); }
 .react-flow__handle { opacity: .8; }
 
-.scrollbar-thin { scrollbar-width: thin; scrollbar-color: rgba(157,232,255,.2) transparent; }
+.scrollbar-thin { scrollbar-width: thin; scrollbar-color: rgba(159,232,255,.22) transparent; }
 .scrollbar-thin::-webkit-scrollbar { width: 4px; }
-.scrollbar-thin::-webkit-scrollbar-thumb { border-radius: 99px; background: rgba(157,232,255,.2); }
+.scrollbar-thin::-webkit-scrollbar-thumb { border-radius: 99px; background: rgba(159,232,255,.22); }
 .message-enter { animation: message-in .24s cubic-bezier(.23,1,.32,1) both; }
- .live-dot { animation: live-pulse 1.8s ease-in-out infinite; }
+.live-dot { animation: live-pulse 1.8s ease-in-out infinite; }
 .signal-pulse { animation: signal-ring 1.8s ease-out infinite; }
 .typing-dots { display: inline-block; width: 18px; overflow: hidden; animation: dots 1.2s steps(4, end) infinite; }
 @keyframes message-in { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: translateY(0); } }

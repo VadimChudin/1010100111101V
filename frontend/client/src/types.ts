@@ -62,6 +62,7 @@ export interface RunSubmission {
   run_id: string
   status: string
   task: string
+  mode?: 'chat' | 'project'
 }
 
 export interface ChatResponse {
@@ -80,7 +81,7 @@ export interface SocketState {
 
 
 export type WorkspaceMarkerType = 'note' | 'task' | 'decision' | 'question' | 'error' | 'blocked' | 'running' | 'approval_required'
-export type WorkspaceTaskStatus = 'backlog' | 'todo' | 'in_progress' | 'blocked' | 'done'
+export type WorkspaceTaskStatus = 'backlog' | 'todo' | 'in_progress' | 'blocked' | 'done' | 'clarifying' | 'ready' | 'working' | 'needs_you' | 'review' | 'deferred'
 
 export interface WorkspaceProject {
   id: string

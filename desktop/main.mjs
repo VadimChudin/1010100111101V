@@ -15,7 +15,6 @@ const FRONTEND_URL = process.env.AGENT_ROOM_FRONTEND_URL || 'https://frontend-sw
 const COOKIE_NAME = process.env.AGENT_ROOM_SESSION_COOKIE || 'agent_platform_session'
 let DESKTOP_SESSION = null
 let mainWindow = null
-let workspaceWindow = null
 
 function statePath() {
   return path.join(app.getPath('userData'), 'desktop-secrets.bin')
@@ -79,7 +78,15 @@ async function run(command, args, options = {}) {
 }
 
 function startDetached(command, args, options = {}) {
-  const child = spawn(command, args, { detached: true, stdio: 'ignore', windowsHide: true, env: options.env || process.env })
+  // `windowsHide` is deliberate: local services are implementation detail, not UI.
+  // `unref` lets runtime/Serena survive the setup call without creating a console window.
+  const child = spawn(command, args, {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+    windowsVerbatimArguments: false,
+    env: options.env || process.env,
+  })
   child.unref()
   return child.pid
 }
@@ -234,23 +241,12 @@ function createMainWindow() {
   }
 }
 
-function createWorkspaceWindow() {
-  if (workspaceWindow && !workspaceWindow.isDestroyed()) {
-    workspaceWindow.show()
-    workspaceWindow.focus()
-    return
+function openWorkspaceInMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createMainWindow()
   }
-  workspaceWindow = new BrowserWindow({
-    width: 1440,
-    height: 960,
-    minWidth: 900,
-    minHeight: 640,
-    backgroundColor: '#080c11',
-    title: 'Agent Room · Workspace',
-    webPreferences: { partition: 'persist:agent-room', contextIsolation: true, nodeIntegration: false, sandbox: true },
-  })
-  workspaceWindow.loadURL(FRONTEND_URL)
-  workspaceWindow.on('closed', () => { workspaceWindow = null })
+  mainWindow.maximize()
+  mainWindow.loadURL(FRONTEND_URL)
 }
 
 ipcMain.handle('desktop:status', async () => {
@@ -350,7 +346,7 @@ ipcMain.handle('desktop:install-and-pair', async (_event, payload) => {
   return { runtime: 'Registered and synchronizing with verified auto-update.', serena, graphiti }
 })
 
-ipcMain.handle('desktop:open-workspace', () => createWorkspaceWindow())
+ipcMain.handle('desktop:open-workspace', () => openWorkspaceInMainWindow())
 ipcMain.handle('desktop:open-diagnostics', async () => shell.openPath(runtimeHome()))
 
 app.whenReady().then(async () => {

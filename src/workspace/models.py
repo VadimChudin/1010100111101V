@@ -19,11 +19,20 @@ class MarkerType(StrEnum):
 
 
 class TaskStatus(StrEnum):
+    # Legacy values remain readable for previously persisted workspaces.
     BACKLOG = "backlog"
     TODO = "todo"
     IN_PROGRESS = "in_progress"
     BLOCKED = "blocked"
     DONE = "done"
+
+    # Chat-first user-facing workflow.
+    CLARIFYING = "clarifying"
+    READY = "ready"
+    WORKING = "working"
+    NEEDS_YOU = "needs_you"
+    REVIEW = "review"
+    DEFERRED = "deferred"
 
 
 class DeviceStatus(StrEnum):
