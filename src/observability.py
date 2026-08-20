@@ -20,6 +20,7 @@ class MetricsRegistry:
     requests_total: Counter[str] = field(default_factory=Counter)
     request_duration_ms_total: Counter[str] = field(default_factory=Counter)
     runs_total: Counter[str] = field(default_factory=Counter)
+    worker_total: Counter[str] = field(default_factory=Counter)
     _lock: Lock = field(default_factory=Lock)
 
     def record(self, method: str, route: str, status: int, duration_ms: int) -> None:
@@ -32,10 +33,15 @@ class MetricsRegistry:
         with self._lock:
             self.runs_total[status] += 1
 
+    def record_worker(self, outcome: str) -> None:
+        with self._lock:
+            self.worker_total[outcome] += 1
+
     def snapshot(self) -> dict[str, object]:
         with self._lock:
             return {
                 "runs": [{"status": status, "count": count} for status, count in sorted(self.runs_total.items())],
+                "worker": [{"outcome": outcome, "count": count} for outcome, count in sorted(self.worker_total.items())],
                 "requests": [
                     {"key": key, "count": count, "duration_ms_total": self.request_duration_ms_total[key]}
                     for key, count in sorted(self.requests_total.items())

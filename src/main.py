@@ -22,11 +22,16 @@ async def lifespan(_: FastAPI):
     await get_workspace_store(store).initialize()
     await get_auth_store(store).initialize()
     await queue.initialize()
-    worker_task = asyncio.create_task(RunWorker(queue, store).serve(), name="agent-run-worker")
+    worker = RunWorker(queue, store)
+    worker_task = asyncio.create_task(worker.serve(), name="agent-run-worker")
     try:
         yield
     finally:
-        await cancel_task(worker_task)
+        worker.request_shutdown()
+        try:
+            await asyncio.wait_for(worker_task, timeout=get_settings().worker_shutdown_grace_seconds)
+        except TimeoutError:
+            await cancel_task(worker_task)
         await queue.close()
 
 

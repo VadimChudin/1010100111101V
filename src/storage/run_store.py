@@ -4,7 +4,7 @@ import asyncio
 import json
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +22,9 @@ CREATE TABLE IF NOT EXISTS runs (
     status TEXT NOT NULL,
     answer TEXT NOT NULL DEFAULT '',
     plan_json TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    lease_expires_at TEXT,
+    last_error TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -56,6 +59,10 @@ def utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def utc_after(seconds: int) -> str:
+    return (datetime.now(UTC) + timedelta(seconds=seconds)).isoformat()
+
+
 @dataclass(frozen=True)
 class PersistedRun:
     id: str
@@ -64,8 +71,17 @@ class PersistedRun:
     status: str
     answer: str
     plan: dict[str, Any] | None
+    attempt_count: int
+    lease_expires_at: str | None
+    last_error: str | None
     created_at: str
     updated_at: str
+
+
+@dataclass(frozen=True)
+class RecoveryResult:
+    queued: list[PersistedRun]
+    exhausted: list[PersistedRun]
 
 
 @dataclass(frozen=True)
@@ -104,6 +120,16 @@ class SQLiteRunStore:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.executescript(SCHEMA)
+            existing = {row["name"] for row in connection.execute("PRAGMA table_info(runs)").fetchall()}
+            migrations = {
+                "attempt_count": "ALTER TABLE runs ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0",
+                "lease_expires_at": "ALTER TABLE runs ADD COLUMN lease_expires_at TEXT",
+                "last_error": "ALTER TABLE runs ADD COLUMN last_error TEXT",
+            }
+            for column, statement in migrations.items():
+                if column not in existing:
+                    connection.execute(statement)
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_runs_status_lease ON runs(status, lease_expires_at)")
 
     async def initialize(self) -> None:
         if self._initialized:
@@ -118,7 +144,7 @@ class SQLiteRunStore:
                 "INSERT INTO runs (id, user_id, task, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
                 (run_id, user_id, task, status, timestamp, timestamp),
             )
-        return PersistedRun(run_id, user_id, task, status, "", None, timestamp, timestamp)
+        return PersistedRun(run_id, user_id, task, status, "", None, 0, None, None, timestamp, timestamp)
 
     async def create_run(self, run_id: str, user_id: str, task: str, status: str = "queued") -> PersistedRun:
         await self.initialize()
@@ -153,17 +179,70 @@ class SQLiteRunStore:
         await self.initialize()
         return await asyncio.to_thread(self._append_events_sync, run_id, events)
 
-    def _claim_run_sync(self, run_id: str) -> bool:
+    def _claim_run_sync(self, run_id: str, lease_seconds: int) -> bool:
+        now = utc_now()
         with self._connect() as connection:
             cursor = connection.execute(
-                "UPDATE runs SET status = ?, updated_at = ? WHERE id = ? AND status = ?",
-                ("running", utc_now(), run_id, "queued"),
+                "UPDATE runs SET status = ?, attempt_count = attempt_count + 1, lease_expires_at = ?, updated_at = ? WHERE id = ? AND status = ?",
+                ("running", utc_after(lease_seconds), now, run_id, "queued"),
             )
             return cursor.rowcount == 1
 
-    async def claim_run(self, run_id: str) -> bool:
+    async def claim_run(self, run_id: str, lease_seconds: int = 120) -> bool:
         await self.initialize()
-        return await asyncio.to_thread(self._claim_run_sync, run_id)
+        return await asyncio.to_thread(self._claim_run_sync, run_id, lease_seconds)
+
+    def _renew_lease_sync(self, run_id: str, lease_seconds: int) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE runs SET lease_expires_at = ?, updated_at = ? WHERE id = ? AND status = ?",
+                (utc_after(lease_seconds), utc_now(), run_id, "running"),
+            )
+            return cursor.rowcount == 1
+
+    async def renew_lease(self, run_id: str, lease_seconds: int) -> bool:
+        await self.initialize()
+        return await asyncio.to_thread(self._renew_lease_sync, run_id, lease_seconds)
+
+    def _release_for_retry_sync(self, run_id: str, error: str, max_attempts: int) -> bool:
+        with self._connect() as connection:
+            row = connection.execute("SELECT attempt_count FROM runs WHERE id = ?", (run_id,)).fetchone()
+            if row is None:
+                return False
+            retry = int(row["attempt_count"] or 0) < max_attempts
+            connection.execute(
+                "UPDATE runs SET status = ?, lease_expires_at = NULL, last_error = ?, updated_at = ? WHERE id = ?",
+                ("queued" if retry else "failed", error[:1000], utc_now(), run_id),
+            )
+        return retry
+
+    async def release_for_retry(self, run_id: str, error: str, max_attempts: int) -> bool:
+        await self.initialize()
+        return await asyncio.to_thread(self._release_for_retry_sync, run_id, error, max_attempts)
+
+    def _recover_runs_sync(self, max_attempts: int, limit: int) -> RecoveryResult:
+        now = utc_now()
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM runs WHERE status = 'queued' OR (status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at <= ?)) ORDER BY updated_at LIMIT ?",
+                (now, limit),
+            ).fetchall()
+            queued: list[PersistedRun] = []
+            exhausted: list[PersistedRun] = []
+            for row in rows:
+                run = self._run_from_row(row)
+                if run.status == "running" and run.attempt_count >= max_attempts:
+                    connection.execute("UPDATE runs SET status = 'failed', lease_expires_at = NULL, last_error = ?, updated_at = ? WHERE id = ?", ("Worker lease expired after maximum attempts.", now, run.id))
+                    exhausted.append(run)
+                    continue
+                if run.status == "running":
+                    connection.execute("UPDATE runs SET status = 'queued', lease_expires_at = NULL, last_error = ?, updated_at = ? WHERE id = ?", ("Worker lease expired; run recovered for retry.", now, run.id))
+                queued.append(run)
+        return RecoveryResult(queued=queued, exhausted=exhausted)
+
+    async def recover_runs(self, max_attempts: int, limit: int) -> RecoveryResult:
+        await self.initialize()
+        return await asyncio.to_thread(self._recover_runs_sync, max_attempts, limit)
 
     def _set_status_sync(self, run_id: str, status: str) -> None:
         with self._connect() as connection:
@@ -179,7 +258,7 @@ class SQLiteRunStore:
     def _complete_run_sync(self, run_id: str, status: str, answer: str, plan: dict[str, Any] | None) -> None:
         with self._connect() as connection:
             connection.execute(
-                "UPDATE runs SET status = ?, answer = ?, plan_json = ?, updated_at = ? WHERE id = ?",
+                "UPDATE runs SET status = ?, answer = ?, plan_json = ?, lease_expires_at = NULL, updated_at = ? WHERE id = ?",
                 (status, answer, json.dumps(plan, ensure_ascii=False) if plan else None, utc_now(), run_id),
             )
 
@@ -187,11 +266,8 @@ class SQLiteRunStore:
         await self.initialize()
         await asyncio.to_thread(self._complete_run_sync, run_id, status, answer, plan)
 
-    def _get_run_sync(self, run_id: str) -> PersistedRun | None:
-        with self._connect() as connection:
-            row = connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
-        if row is None:
-            return None
+    @staticmethod
+    def _run_from_row(row: sqlite3.Row) -> PersistedRun:
         return PersistedRun(
             id=row["id"],
             user_id=row["user_id"],
@@ -199,9 +275,17 @@ class SQLiteRunStore:
             status=row["status"],
             answer=row["answer"],
             plan=json.loads(row["plan_json"]) if row["plan_json"] else None,
+            attempt_count=int(row["attempt_count"] or 0),
+            lease_expires_at=row["lease_expires_at"],
+            last_error=row["last_error"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
+
+    def _get_run_sync(self, run_id: str) -> PersistedRun | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        return self._run_from_row(row) if row is not None else None
 
     async def get_run(self, run_id: str) -> PersistedRun | None:
         await self.initialize()

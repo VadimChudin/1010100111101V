@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     github_oauth_client_id: str = ""
     github_oauth_client_secret: str = ""
     github_oauth_redirect_uri: str = "https://app-production-cc16.up.railway.app/v1/auth/github/callback"
+    worker_lease_seconds: int = 120
+    worker_heartbeat_seconds: int = 15
+    worker_max_attempts: int = 3
+    worker_shutdown_grace_seconds: int = 30
+    worker_recovery_batch_size: int = 50
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore", case_sensitive=False)
 
 @lru_cache
