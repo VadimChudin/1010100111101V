@@ -25,3 +25,16 @@ The release has backend regression coverage for chat contracts, SQLite storage, 
 The MVP intentionally uses a single-service delivery fallback in addition to Redis queue hand-off. It is suitable for the current free-tier deployment but does not yet offer stale-run leases or recovery after a worker dies post-claim. See [ADR 003](adr/003-queue-worker-fallback.md).
 
 Serena remains **read-only by design** and is unavailable until its connector is enabled with explicit confirmation. Its staged integration is documented in [ADR 004](adr/004-serena-read-only-provider.md).
+
+
+## 0.2.0-beta — Production Hardening
+
+| Area | Delivered capability |
+|---|---|
+| **Worker reliability** | Execution leases, heartbeats, bounded retries, periodic stale-run recovery, limited model fallback and absolute agent run deadline. |
+| **Approvals** | Durable pending-approval polling with scope-aware approve/reject cards in the frontend. |
+| **Run-to-context** | Completed runs can be saved to workspace notes or follow-up tasks with `source_run_id` provenance. |
+| **Security** | `X-Content-Type-Options`, anti-framing, referrer and permissions policies; `/v1/metrics` now requires authentication. |
+| **CI** | GitHub Actions validates backend tests, frontend typecheck and Vitest on pushes and pull requests. |
+
+See [`BETA_ACCEPTANCE.md`](BETA_ACCEPTANCE.md) for the operator acceptance matrix, known beta boundaries and rollback procedure.
