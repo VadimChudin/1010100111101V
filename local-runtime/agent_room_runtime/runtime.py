@@ -23,14 +23,18 @@ def iso_now() -> str:
 def git_inventory(workspace_root: str | Path) -> dict[str, Any]:
     root = Path(workspace_root).resolve()
 
-    def run(*arguments: str) -> str:
+    def run(*arguments: str, optional: bool = False) -> str:
         completed = subprocess.run(
-            ["git", "-C", str(root), *arguments], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=20
+            ["git", "-C", str(root), *arguments], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=20
         )
+        if completed.returncode != 0:
+            if optional:
+                return ""
+            raise subprocess.CalledProcessError(completed.returncode, completed.args, output=completed.stdout, stderr=completed.stderr)
         return completed.stdout.strip()
 
     try:
-        repository_url = run("config", "--get", "remote.origin.url") or "local"
+        repository_url = run("config", "--get", "remote.origin.url", optional=True) or "local"
         branch = run("rev-parse", "--abbrev-ref", "HEAD")
         commit_sha = run("rev-parse", "HEAD")
         dirty = bool(run("status", "--porcelain"))
@@ -62,6 +66,31 @@ class LocalRuntime:
     def base_url(self) -> str:
         return self.config.cloud_url.rstrip("/")
 
+    def workspace_manifest(self) -> dict[str, Any]:
+        root = Path(self.config.workspace_root).resolve()
+        inventory = git_inventory(root)
+        workspace_key = hashlib.sha256(f"{root}|{inventory['repository_url']}".encode("utf-8")).hexdigest()
+        return {
+            "workspace_key": workspace_key,
+            "display_name": root.name or "Local workspace",
+            "inventory": inventory,
+            "index_revision": 1,
+            "indexed_at": iso_now(),
+        }
+
+    async def register_workspace(self) -> dict[str, Any]:
+        if not self.config.is_registered:
+            raise RuntimeError("Runtime is not paired. Run the register command first.")
+        headers = {"X-Device-Token": self.config.device_token}
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                f"{self.base_url}/v1/projects/{self.config.project_id}/devices/{self.config.device_id}/workspaces",
+                headers=headers,
+                json=self.workspace_manifest(),
+            )
+            response.raise_for_status()
+            return response.json()
+
     async def register(self, pairing_token: str) -> dict[str, Any]:
         inventory = git_inventory(self.config.workspace_root)
         public_key = self.config.public_key or secrets.token_urlsafe(32)
@@ -80,6 +109,9 @@ class LocalRuntime:
         self.config.device_id = str(registration["id"])
         self.config.device_token = str(registration["device_token"])
         self.config.public_key = public_key
+        self.config.save()
+        registration["local_workspace"] = await self.register_workspace()
+        self.config.workspace_id = str(registration["local_workspace"]["id"])
         self.config.save()
         return registration
 

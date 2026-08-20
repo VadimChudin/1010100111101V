@@ -31,10 +31,15 @@ from .models import (
     DeviceSyncResponse,
     GraphitiEpisodeEnvelope,
     LocalRepositoryInventory,
+    LocalWorkspace,
+    LocalWorkspaceManifest,
     MarkerType,
     ModuleCreateRequest,
     NoteCreateRequest,
     ProjectCreateRequest,
+    ProjectSource,
+    ProjectSourceKind,
+    ProjectSourceSelectionRequest,
     ProjectDevice,
     ProjectEvent,
     ProjectEventMutation,
@@ -172,6 +177,30 @@ CREATE TABLE IF NOT EXISTS device_pairings (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS local_workspaces (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    device_id TEXT NOT NULL REFERENCES project_devices(id) ON DELETE CASCADE,
+    workspace_key TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    inventory_json TEXT NOT NULL,
+    index_revision INTEGER NOT NULL DEFAULT 0,
+    indexed_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(project_id, device_id, workspace_key)
+);
+
+CREATE TABLE IF NOT EXISTS project_source_selections (
+    project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    local_workspace_id TEXT REFERENCES local_workspaces(id) ON DELETE SET NULL,
+    repository_url TEXT,
+    ref TEXT,
+    selected_at TEXT NOT NULL,
+    selected_by_user_id TEXT
+);
+
 CREATE TABLE IF NOT EXISTS device_jobs (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -224,6 +253,7 @@ CREATE TABLE IF NOT EXISTS graphiti_episode_envelopes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_project_devices_project ON project_devices(project_id, status);
+CREATE INDEX IF NOT EXISTS idx_local_workspaces_project_device ON local_workspaces(project_id, device_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_device_jobs_delivery ON device_jobs(project_id, device_id, status, expires_at, lease_expires_at);
 CREATE INDEX IF NOT EXISTS idx_project_events_project_sequence ON project_events(project_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_device_pairings_token ON device_pairings(token_hash);
@@ -750,6 +780,21 @@ class WorkspaceStore:
         )
 
     @staticmethod
+    def _local_workspace(row: sqlite3.Row) -> LocalWorkspace:
+        return LocalWorkspace(
+            id=row["id"], project_id=row["project_id"], device_id=row["device_id"], display_name=row["display_name"],
+            workspace_key=row["workspace_key"], inventory=LocalRepositoryInventory.model_validate(json.loads(row["inventory_json"])),
+            index_revision=int(row["index_revision"]), indexed_at=row["indexed_at"], created_at=row["created_at"], updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _project_source(row: sqlite3.Row) -> ProjectSource:
+        return ProjectSource(
+            project_id=row["project_id"], kind=ProjectSourceKind(row["kind"]), local_workspace_id=row["local_workspace_id"],
+            repository_url=row["repository_url"], ref=row["ref"], selected_at=row["selected_at"], selected_by_user_id=row["selected_by_user_id"],
+        )
+
+    @staticmethod
     def _validate_device_job_payload(job_type: DeviceJobType, payload: dict[str, Any]) -> dict[str, Any]:
         def required_text(key: str, maximum: int) -> str:
             value = payload.get(key)
@@ -799,6 +844,76 @@ class WorkspaceStore:
             if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 20:
                 raise ValueError("limit must be an integer from 1 to 20")
             return {"query": required_text("query", 2000), "limit": limit}
+
+        workspace_id = required_text("workspace_id", 120)
+        if job_type == DeviceJobType.REFRESH_WORKSPACE_INDEX:
+            if set(payload).difference({"workspace_id"}):
+                raise ValueError("refresh_workspace_index contains unsupported fields")
+            return {"workspace_id": workspace_id}
+        if job_type == DeviceJobType.LIST_WORKSPACE_FILES:
+            if set(payload).difference({"workspace_id", "prefix", "limit"}):
+                raise ValueError("list_workspace_files contains unsupported fields")
+            prefix = optional_path("prefix") or ""
+            limit = payload.get("limit", 500)
+            if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 1000:
+                raise ValueError("limit must be an integer from 1 to 1000")
+            return {"workspace_id": workspace_id, "prefix": prefix, "limit": limit}
+        if job_type == DeviceJobType.SEARCH_WORKSPACE_TEXT:
+            if set(payload).difference({"workspace_id", "query", "prefix", "limit"}):
+                raise ValueError("search_workspace_text contains unsupported fields")
+            prefix = optional_path("prefix") or ""
+            limit = payload.get("limit", 50)
+            if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
+                raise ValueError("limit must be an integer from 1 to 100")
+            return {"workspace_id": workspace_id, "query": required_text("query", 500), "prefix": prefix, "limit": limit}
+        if job_type == DeviceJobType.READ_FILE_RANGE:
+            if set(payload).difference({"workspace_id", "relative_path", "start_line", "end_line"}):
+                raise ValueError("read_file_range contains unsupported fields")
+            relative_path = optional_path()
+            if not relative_path:
+                raise ValueError("relative_path is required")
+            start_line, end_line = payload.get("start_line", 1), payload.get("end_line", 400)
+            if not all(isinstance(value, int) and not isinstance(value, bool) for value in (start_line, end_line)) or not 1 <= start_line <= end_line <= start_line + 1000:
+                raise ValueError("line range must be positive and contain at most 1001 lines")
+            return {"workspace_id": workspace_id, "relative_path": relative_path, "start_line": start_line, "end_line": end_line}
+        if job_type == DeviceJobType.APPLY_UNIFIED_PATCH:
+            if set(payload).difference({"workspace_id", "patch"}):
+                raise ValueError("apply_unified_patch contains unsupported fields")
+            patch = required_text("patch", 48000)
+            if not patch.startswith(("--- ", "diff --git ")):
+                raise ValueError("patch must be a unified diff")
+            return {"workspace_id": workspace_id, "patch": patch}
+        if job_type == DeviceJobType.RUN_TEST_PROFILE:
+            if set(payload).difference({"workspace_id", "profile"}):
+                raise ValueError("run_test_profile contains unsupported fields")
+            profile = required_text("profile", 100)
+            if not re.fullmatch(r"[A-Za-z0-9_.-]+", profile):
+                raise ValueError("profile contains unsupported characters")
+            return {"workspace_id": workspace_id, "profile": profile}
+        if job_type in {DeviceJobType.GIT_STATUS, DeviceJobType.GIT_DIFF}:
+            if set(payload).difference({"workspace_id", "relative_path"}):
+                raise ValueError("Git read request contains unsupported fields")
+            clean = {"workspace_id": workspace_id}
+            relative_path = optional_path()
+            if relative_path:
+                clean["relative_path"] = relative_path
+            return clean
+        if job_type == DeviceJobType.GIT_COMMIT:
+            if set(payload).difference({"workspace_id", "message"}):
+                raise ValueError("git_commit contains unsupported fields")
+            return {"workspace_id": workspace_id, "message": required_text("message", 240)}
+        if job_type == DeviceJobType.GIT_PUSH:
+            if set(payload).difference({"workspace_id", "remote", "branch"}):
+                raise ValueError("git_push contains unsupported fields")
+            remote, branch = str(payload.get("remote", "origin")), payload.get("branch")
+            if remote != "origin":
+                raise ValueError("Only configured origin remote is supported")
+            clean = {"workspace_id": workspace_id, "remote": remote}
+            if branch is not None:
+                if not isinstance(branch, str) or not re.fullmatch(r"[A-Za-z0-9_./-]{1,240}", branch):
+                    raise ValueError("branch contains unsupported characters")
+                clean["branch"] = branch
+            return clean
         raise ValueError("Unsupported device job type")
 
     @staticmethod
@@ -842,6 +957,11 @@ class WorkspaceStore:
             device = connection.execute("SELECT * FROM project_devices WHERE id = ? AND project_id = ?", (request.device_id, project_id)).fetchone()
             if device is None or device["status"] == DeviceStatus.REVOKED:
                 raise LookupError("Registered project device was not found")
+            workspace_id = payload.get("workspace_id")
+            if workspace_id:
+                workspace = connection.execute("SELECT 1 FROM local_workspaces WHERE id = ? AND project_id = ? AND device_id = ?", (workspace_id, project_id, request.device_id)).fetchone()
+                if workspace is None:
+                    raise LookupError("Workspace is not registered on the selected device")
             connection.execute(
                 "INSERT INTO device_jobs (id, project_id, device_id, creator_user_id, type, payload_json, status, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (job_id, project_id, request.device_id, creator_user_id, request.type, json.dumps(payload), DeviceJobStatus.PENDING_APPROVAL, expires_at, timestamp),
@@ -940,6 +1060,75 @@ class WorkspaceStore:
     async def complete_device_job_results(self, project_id: str, device_id: str, results: list[DeviceJobResultSubmission]) -> tuple[list[str], list[SyncConflict]]:
         await self.initialize()
         return await asyncio.to_thread(self._complete_device_job_results_sync, project_id, device_id, results)
+
+    def _upsert_local_workspace_sync(self, project_id: str, device_id: str, manifest: LocalWorkspaceManifest) -> LocalWorkspace:
+        timestamp = now()
+        with self._connect() as connection:
+            device = connection.execute("SELECT 1 FROM project_devices WHERE id = ? AND project_id = ? AND status != ?", (device_id, project_id, DeviceStatus.REVOKED)).fetchone()
+            if device is None:
+                raise PermissionError("Device is not authorized for this project")
+            existing = connection.execute("SELECT id FROM local_workspaces WHERE project_id = ? AND device_id = ? AND workspace_key = ?", (project_id, device_id, manifest.workspace_key)).fetchone()
+            workspace_id = str(existing["id"]) if existing else new_id()
+            connection.execute(
+                "INSERT INTO local_workspaces (id, project_id, device_id, workspace_key, display_name, inventory_json, index_revision, indexed_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(project_id, device_id, workspace_key) DO UPDATE SET display_name = excluded.display_name, inventory_json = excluded.inventory_json, index_revision = excluded.index_revision, indexed_at = excluded.indexed_at, updated_at = excluded.updated_at",
+                (workspace_id, project_id, device_id, manifest.workspace_key, manifest.display_name, json.dumps(manifest.inventory.model_dump()), manifest.index_revision, manifest.indexed_at, timestamp, timestamp),
+            )
+            row = connection.execute("SELECT * FROM local_workspaces WHERE id = ?", (workspace_id,)).fetchone()
+        return self._local_workspace(row)
+
+    async def upsert_local_workspace(self, project_id: str, device_id: str, manifest: LocalWorkspaceManifest) -> LocalWorkspace:
+        await self.initialize()
+        return await asyncio.to_thread(self._upsert_local_workspace_sync, project_id, device_id, manifest)
+
+    def _local_workspaces_sync(self, project_id: str, device_id: str | None = None) -> list[LocalWorkspace]:
+        with self._connect() as connection:
+            if device_id:
+                rows = connection.execute("SELECT * FROM local_workspaces WHERE project_id = ? AND device_id = ? ORDER BY updated_at DESC", (project_id, device_id)).fetchall()
+            else:
+                rows = connection.execute("SELECT * FROM local_workspaces WHERE project_id = ? ORDER BY updated_at DESC", (project_id,)).fetchall()
+        return [self._local_workspace(row) for row in rows]
+
+    async def local_workspaces(self, project_id: str, device_id: str | None = None) -> list[LocalWorkspace]:
+        await self.initialize()
+        return await asyncio.to_thread(self._local_workspaces_sync, project_id, device_id)
+
+    def _select_project_source_sync(self, project_id: str, user_id: str, request: ProjectSourceSelectionRequest) -> ProjectSource:
+        timestamp = now()
+        with self._connect() as connection:
+            if request.kind == ProjectSourceKind.PAIRED_LOCAL:
+                if not request.local_workspace_id:
+                    raise ValueError("A paired local workspace must be selected")
+                workspace = connection.execute("SELECT id FROM local_workspaces WHERE id = ? AND project_id = ?", (request.local_workspace_id, project_id)).fetchone()
+                if workspace is None:
+                    raise LookupError("Local workspace was not found in this project")
+                local_workspace_id, repository_url, ref = request.local_workspace_id, None, None
+            elif request.kind == ProjectSourceKind.GITHUB_REPOSITORY:
+                if not request.repository_url:
+                    raise ValueError("A GitHub repository URL is required")
+                if not request.repository_url.startswith(("https://github.com/", "git@github.com:")):
+                    raise ValueError("Only GitHub repository sources are supported")
+                local_workspace_id, repository_url, ref = None, request.repository_url, request.ref or "HEAD"
+            else:
+                raise ValueError("Unsupported project source")
+            connection.execute(
+                "INSERT INTO project_source_selections (project_id, kind, local_workspace_id, repository_url, ref, selected_at, selected_by_user_id) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(project_id) DO UPDATE SET kind = excluded.kind, local_workspace_id = excluded.local_workspace_id, repository_url = excluded.repository_url, ref = excluded.ref, selected_at = excluded.selected_at, selected_by_user_id = excluded.selected_by_user_id",
+                (project_id, request.kind, local_workspace_id, repository_url, ref, timestamp, user_id),
+            )
+            row = connection.execute("SELECT * FROM project_source_selections WHERE project_id = ?", (project_id,)).fetchone()
+        return self._project_source(row)
+
+    async def select_project_source(self, project_id: str, user_id: str, request: ProjectSourceSelectionRequest) -> ProjectSource:
+        await self.initialize()
+        return await asyncio.to_thread(self._select_project_source_sync, project_id, user_id, request)
+
+    def _project_source_sync(self, project_id: str) -> ProjectSource | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM project_source_selections WHERE project_id = ?", (project_id,)).fetchone()
+        return self._project_source(row) if row else None
+
+    async def project_source(self, project_id: str) -> ProjectSource | None:
+        await self.initialize()
+        return await asyncio.to_thread(self._project_source_sync, project_id)
 
     def _create_device_pairing_sync(self, project_id: str, owner_user_id: str, request: DevicePairingRequest) -> DevicePairing:
         timestamp = now()

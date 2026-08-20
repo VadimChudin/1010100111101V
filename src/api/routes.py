@@ -35,10 +35,14 @@ from src.workspace import (
     DeviceSyncRequest,
     DeviceSyncResponse,
     GraphitiEpisodeEnvelope,
+    LocalWorkspace,
+    LocalWorkspaceManifest,
     ModuleCreateRequest,
     NoteCreateRequest,
     ProjectCreateRequest,
     ProjectDevice,
+    ProjectSource,
+    ProjectSourceSelectionRequest,
     ProjectEventType,
     RepositoryFile,
     RepositoryIndex,
@@ -310,6 +314,29 @@ async def get_project_devices(project_id: str, request: Request):
     return await workspace_store().list_devices(project_id)
 
 
+@router.get("/projects/{project_id}/local-workspaces", response_model=list[LocalWorkspace])
+async def get_project_local_workspaces(project_id: str, request: Request, device_id: str | None = None):
+    await require_project_access(request, project_id)
+    return await workspace_store().local_workspaces(project_id, device_id=device_id)
+
+
+@router.get("/projects/{project_id}/source", response_model=ProjectSource | None)
+async def get_project_source(project_id: str, request: Request):
+    await require_project_access(request, project_id)
+    return await workspace_store().project_source(project_id)
+
+
+@router.put("/projects/{project_id}/source", response_model=ProjectSource)
+async def set_project_source(project_id: str, payload: ProjectSourceSelectionRequest, request: Request):
+    user = await require_project_access(request, project_id, ProjectRole.OWNER)
+    try:
+        return await workspace_store().select_project_source(project_id, user.id, payload)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.get("/projects/{project_id}/devices/jobs", response_model=list[DeviceJob])
 async def get_project_device_jobs(project_id: str, request: Request, device_id: str | None = None, limit: int = 50):
     await require_project_access(request, project_id)
@@ -341,6 +368,15 @@ async def require_registered_device(project_id: str, device_id: str, device_toke
     if device is None or device.id != device_id:
         raise HTTPException(status_code=401, detail="Device authentication failed")
     return device
+
+
+@router.post("/projects/{project_id}/devices/{device_id}/workspaces", response_model=LocalWorkspace, status_code=201)
+async def register_device_local_workspace(project_id: str, device_id: str, payload: LocalWorkspaceManifest, x_device_token: str | None = Header(default=None)):
+    await require_registered_device(project_id, device_id, x_device_token or "")
+    try:
+        return await workspace_store().upsert_local_workspace(project_id, device_id, payload)
+    except PermissionError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
 
 
 @router.post("/projects/{project_id}/devices/{device_id}/sync", response_model=DeviceSyncResponse)

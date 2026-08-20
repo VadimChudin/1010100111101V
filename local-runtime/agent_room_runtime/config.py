@@ -13,6 +13,7 @@ class RuntimeConfig:
     state_dir: str
     device_id: str = ""
     device_token: str = ""
+    workspace_id: str = ""
     device_name: str = "Local Agent Room Runtime"
     runtime_version: str = "0.1.0"
     installed_build: str = "source"

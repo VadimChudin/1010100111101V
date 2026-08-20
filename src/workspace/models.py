@@ -32,11 +32,39 @@ class DeviceStatus(StrEnum):
     REVOKED = "revoked"
 
 
+class ProjectSourceKind(StrEnum):
+    GITHUB_REPOSITORY = "github_repository"
+    PAIRED_LOCAL = "paired_local"
+
+
+class WorkspaceOperationType(StrEnum):
+    REFRESH_INDEX = "refresh_index"
+    LIST_FILES = "list_files"
+    SEARCH_TEXT = "search_text"
+    READ_FILE_RANGE = "read_file_range"
+    APPLY_UNIFIED_PATCH = "apply_unified_patch"
+    RUN_TEST_PROFILE = "run_test_profile"
+    GIT_STATUS = "git_status"
+    GIT_DIFF = "git_diff"
+    GIT_COMMIT = "git_commit"
+    GIT_PUSH = "git_push"
+
+
 class DeviceJobType(StrEnum):
     FIND_SYMBOL = "find_symbol"
     FIND_REFERENCES = "find_references"
     INDEX_WORKSPACE = "index_workspace"
     RETRIEVE_PROJECT_MEMORY = "retrieve_project_memory"
+    REFRESH_WORKSPACE_INDEX = "refresh_workspace_index"
+    LIST_WORKSPACE_FILES = "list_workspace_files"
+    SEARCH_WORKSPACE_TEXT = "search_workspace_text"
+    READ_FILE_RANGE = "read_file_range"
+    APPLY_UNIFIED_PATCH = "apply_unified_patch"
+    RUN_TEST_PROFILE = "run_test_profile"
+    GIT_STATUS = "git_status"
+    GIT_DIFF = "git_diff"
+    GIT_COMMIT = "git_commit"
+    GIT_PUSH = "git_push"
 
 
 class DeviceJobStatus(StrEnum):
@@ -183,6 +211,44 @@ class LocalRepositoryInventory(BaseModel):
     dirty: bool = False
     tracked_files: int = Field(default=0, ge=0)
     workspace_fingerprint: str = Field(default="", max_length=128)
+
+
+class LocalWorkspaceManifest(BaseModel):
+    workspace_key: str = Field(min_length=16, max_length=128)
+    display_name: str = Field(min_length=1, max_length=160)
+    inventory: LocalRepositoryInventory
+    index_revision: int = Field(default=0, ge=0)
+    indexed_at: str = Field(min_length=10, max_length=64)
+
+
+class LocalWorkspace(BaseModel):
+    id: str
+    project_id: str
+    device_id: str
+    display_name: str
+    workspace_key: str
+    inventory: LocalRepositoryInventory
+    index_revision: int
+    indexed_at: str
+    created_at: str
+    updated_at: str
+
+
+class ProjectSourceSelectionRequest(BaseModel):
+    kind: ProjectSourceKind
+    local_workspace_id: str | None = Field(default=None, min_length=8, max_length=120)
+    repository_url: str | None = Field(default=None, max_length=2000)
+    ref: str | None = Field(default=None, max_length=240)
+
+
+class ProjectSource(BaseModel):
+    project_id: str
+    kind: ProjectSourceKind
+    local_workspace_id: str | None = None
+    repository_url: str | None = None
+    ref: str | None = None
+    selected_at: str
+    selected_by_user_id: str | None = None
 
 
 class DevicePairingRequest(BaseModel):

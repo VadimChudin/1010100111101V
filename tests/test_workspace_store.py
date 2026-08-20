@@ -15,8 +15,11 @@ from src.workspace import (
     DeviceRegistrationRequest,
     DeviceSyncRequest,
     LocalRepositoryInventory,
+    LocalWorkspaceManifest,
     NoteCreateRequest,
     ProjectEventMutation,
+    ProjectSourceKind,
+    ProjectSourceSelectionRequest,
     ProjectEventType,
     TaskCreateRequest,
     TaskStatus,
@@ -348,6 +351,38 @@ async def test_device_pairing_and_sync_api(monkeypatch, tmp_path):
     assert devices.json()[0]["status"] == "online"
     assert denied.status_code == 401
     assert "device_token" not in devices.json()[0]
+
+
+@pytest.mark.asyncio
+async def test_paired_local_workspace_registry_and_source_selection(tmp_path):
+    repository = create_repository(tmp_path / "repository")
+    run_store = SQLiteRunStore(str(tmp_path / "workspace-source-state.db"))
+    store = get_workspace_store(run_store)
+    project = await store.ensure_default_project()
+    pairing = await store.create_device_pairing(project.id, "owner-1", DevicePairingRequest(name_hint="Workspace laptop"))
+    registration = await store.register_device(
+        project.id,
+        DeviceRegistrationRequest(
+            pairing_token=pairing.pairing_token, name="Workspace laptop", public_key="workspace-local-public-key-material",
+            inventory=LocalRepositoryInventory(repository_url="https://github.com/example/large.git", branch="main", commit_sha="e" * 40, tracked_files=200_000),
+        ),
+    )
+    manifest = LocalWorkspaceManifest(
+        workspace_key="a" * 64, display_name="large-project",
+        inventory=LocalRepositoryInventory(repository_url="https://github.com/example/large.git", branch="main", commit_sha="e" * 40, tracked_files=200_000),
+        index_revision=1, indexed_at="2026-08-20T14:00:00+00:00",
+    )
+    workspace = await store.upsert_local_workspace(project.id, registration.id, manifest)
+    assert workspace.display_name == "large-project"
+    assert workspace.workspace_key == "a" * 64
+    assert str(repository) not in workspace.model_dump_json()
+
+    local_source = await store.select_project_source(project.id, "owner-1", ProjectSourceSelectionRequest(kind=ProjectSourceKind.PAIRED_LOCAL, local_workspace_id=workspace.id))
+    assert local_source.kind == ProjectSourceKind.PAIRED_LOCAL
+    assert local_source.local_workspace_id == workspace.id
+    github_source = await store.select_project_source(project.id, "owner-1", ProjectSourceSelectionRequest(kind=ProjectSourceKind.GITHUB_REPOSITORY, repository_url="https://github.com/example/large.git", ref="main"))
+    assert github_source.kind == ProjectSourceKind.GITHUB_REPOSITORY
+    assert github_source.repository_url == "https://github.com/example/large.git"
 
 
 @pytest.mark.asyncio

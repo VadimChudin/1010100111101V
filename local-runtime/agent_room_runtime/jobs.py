@@ -121,6 +121,36 @@ class DeviceJobExecutor:
             return _bounded({"inventory": git_inventory(self.runtime.config.workspace_root), "serena": "local semantic index is owned by the loopback Serena service"})
         if job_type == "retrieve_project_memory":
             return await self._retrieve_project_memory(payload)
+        workspace_operations = {
+            "refresh_workspace_index", "list_workspace_files", "search_workspace_text", "read_file_range", "apply_unified_patch",
+            "run_test_profile", "git_status", "git_diff", "git_commit", "git_push",
+        }
+        if job_type in workspace_operations:
+            if not self.runtime.config.workspace_id or payload.get("workspace_id") != self.runtime.config.workspace_id:
+                raise PermissionError("Workspace job does not match this registered local workspace")
+            from .workspace_ops import LocalWorkspaceExecutor
+
+            workspace = LocalWorkspaceExecutor(self.runtime.config.workspace_root)
+            if job_type == "refresh_workspace_index":
+                return _bounded(workspace.refresh_index())
+            if job_type == "list_workspace_files":
+                return _bounded(workspace.list_files(str(payload.get("prefix", "")), int(payload.get("limit", 500))))
+            if job_type == "search_workspace_text":
+                return _bounded(workspace.search_text(str(payload["query"]), str(payload.get("prefix", "")), int(payload.get("limit", 50))))
+            if job_type == "read_file_range":
+                return _bounded(workspace.read_file_range(str(payload["relative_path"]), int(payload["start_line"]), int(payload["end_line"])))
+            if job_type == "apply_unified_patch":
+                return _bounded(workspace.apply_unified_patch(str(payload["patch"])))
+            if job_type == "run_test_profile":
+                return _bounded(workspace.run_test_profile(str(payload["profile"])))
+            if job_type == "git_status":
+                return _bounded(workspace.git_status())
+            if job_type == "git_diff":
+                return _bounded(workspace.git_diff(payload.get("relative_path")))
+            if job_type == "git_commit":
+                return _bounded(workspace.git_commit(str(payload["message"])))
+            if job_type == "git_push":
+                return _bounded(workspace.git_push(str(payload.get("remote", "origin")), payload.get("branch")))
         raise PermissionError("Job type is outside the compiled local allow-list")
 
     async def _retrieve_project_memory(self, payload: dict[str, Any]) -> dict[str, Any]:

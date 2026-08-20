@@ -139,3 +139,36 @@ async def test_device_job_executor_uses_only_matching_typed_read_only_serena_job
         await executor.execute({"project_id": "other-project", "device_id": "device-1", "type": "find_symbol", "payload": {}})
     with pytest.raises(PermissionError):
         await executor.execute({"project_id": "project-1", "device_id": "device-1", "type": "execute_shell", "payload": {}})
+
+
+def _create_scoped_workspace(path: Path) -> Path:
+    import subprocess
+
+    path.mkdir()
+    (path / "src").mkdir()
+    (path / "src" / "app.py").write_text("value = 1\n", encoding="utf-8")
+    (path / ".env").write_text("TOP_SECRET=never-expose\n", encoding="utf-8")
+    (path / "agent-room.toml").write_text("[tests.version]\ncommand = [\"python\", \"--version\"]\ntimeout_seconds = 30\n", encoding="utf-8")
+    for command in (["git", "init", "--quiet"], ["git", "config", "user.email", "test@example.com"], ["git", "config", "user.name", "Test"], ["git", "add", "src", "agent-room.toml"], ["git", "commit", "--quiet", "-m", "initial"]):
+        subprocess.run(command, cwd=path, check=True)
+    return path
+
+
+def test_local_workspace_executor_enforces_boundary_and_typed_operations(tmp_path):
+    from agent_room_runtime.workspace_ops import LocalWorkspaceExecutor, WorkspaceBoundaryError
+
+    workspace = _create_scoped_workspace(tmp_path / "workspace")
+    executor = LocalWorkspaceExecutor(workspace)
+    index = executor.refresh_index()
+    assert index["content_uploaded"] is False
+    assert "src/app.py" in executor.list_files()["files"]
+    assert executor.search_text("value")["matches"] == ["src/app.py:1:value = 1"]
+    assert executor.read_file_range("src/app.py", 1, 10)["lines"] == ["value = 1"]
+    with pytest.raises(WorkspaceBoundaryError):
+        executor.read_file_range(".env", 1, 1)
+
+    patch = "--- a/src/app.py\n+++ b/src/app.py\n@@ -1 +1 @@\n-value = 1\n+value = 2\n"
+    applied = executor.apply_unified_patch(patch)
+    assert applied["applied"] is True
+    assert executor.read_file_range("src/app.py", 1, 1)["lines"] == ["value = 2"]
+    assert executor.run_test_profile("version")["exit_code"] == 0

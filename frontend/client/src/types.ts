@@ -232,7 +232,7 @@ export interface GraphitiEpisodeEnvelope {
 }
 
 
-export type DeviceJobType = 'find_symbol' | 'find_references' | 'index_workspace' | 'retrieve_project_memory'
+export type DeviceJobType = 'find_symbol' | 'find_references' | 'index_workspace' | 'retrieve_project_memory' | 'refresh_workspace_index' | 'list_workspace_files' | 'search_workspace_text' | 'read_file_range' | 'apply_unified_patch' | 'run_test_profile' | 'git_status' | 'git_diff' | 'git_commit' | 'git_push'
 export type DeviceJobStatus = 'pending_approval' | 'queued' | 'leased' | 'completed' | 'failed' | 'expired' | 'cancelled'
 
 export interface DeviceJob {
@@ -251,4 +251,30 @@ export interface DeviceJob {
   error?: string | null
   created_at: string
   completed_at?: string | null
+}
+
+
+export type ProjectSourceKind = 'paired_local' | 'github_repository'
+
+export interface LocalWorkspace {
+  id: string
+  project_id: string
+  device_id: string
+  display_name: string
+  workspace_key: string
+  inventory: LocalRepositoryInventory
+  index_revision: number
+  indexed_at: string
+  created_at: string
+  updated_at: string
+}
+
+export interface ProjectSource {
+  project_id: string
+  kind: ProjectSourceKind
+  local_workspace_id?: string | null
+  repository_url?: string | null
+  ref?: string | null
+  selected_at: string
+  selected_by_user_id?: string | null
 }
