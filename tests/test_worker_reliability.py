@@ -60,3 +60,14 @@ async def test_existing_runs_schema_migrates_before_lease_index_creation(tmp_pat
         indexes = {row[1] for row in connection.execute("PRAGMA index_list(runs)")}
     assert {"attempt_count", "lease_expires_at", "last_error"}.issubset(columns)
     assert "idx_runs_status_lease" in indexes
+
+
+@pytest.mark.asyncio
+async def test_periodic_recovery_skips_normally_queued_runs(tmp_path):
+    store = SQLiteRunStore(str(tmp_path / "agent-state.db"))
+    await store.create_run("queued", "user", "Await delivery")
+
+    recovered = await store.recover_runs(max_attempts=3, limit=10, include_queued=False)
+
+    assert recovered.queued == []
+    assert (await store.get_run("queued")).status == "queued"

@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     request_timeout_s: float = 60.0
     openrouter_attempt_timeout_s: float = 20.0
     openrouter_max_fallback_models: int = 3
+    agent_run_timeout_s: float = 90.0
     redis_url: str = "redis://localhost:6379/0"
     neo4j_uri: str = "neo4j://localhost:7687"
     neo4j_user: str = "neo4j"

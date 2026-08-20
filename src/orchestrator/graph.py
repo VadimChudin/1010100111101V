@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
+
+from src.config import get_settings
 
 from .state import AgentState
 from .nodes import planner_node, executor_node, reviewer_node
@@ -10,6 +13,7 @@ try:
 except ImportError:  # pragma: no cover
     StateGraph = None
     END = "__end__"
+
 
 def build_graph():
     if StateGraph is None:
@@ -23,6 +27,7 @@ def build_graph():
     graph.add_edge("executor", "reviewer")
     graph.add_edge("reviewer", END)
     return graph.compile()
+
 
 async def run_agent(
     task: str,
@@ -41,23 +46,24 @@ async def run_agent(
         "status": "queued",
     }
 
-    if event_sink is not None:
-        # The explicit sequence makes each node's appended event observable as
-        # soon as that node completes. The normal invocation keeps LangGraph as
-        # the default execution engine for synchronous compatibility.
-        state = initial
-        for node in (planner_node, executor_node, reviewer_node):
-            prior_events = len(state.get("events", []))
-            state = {**state, **(await node(state))}
-            for event in state.get("events", [])[prior_events:]:
-                await event_sink(event)
-        return state
+    async def execute() -> AgentState:
+        if event_sink is not None:
+            # Persist node events immediately so an interrupted run retains
+            # its progress and can be diagnosed or retried durably.
+            state = initial
+            for node in (planner_node, executor_node, reviewer_node):
+                prior_events = len(state.get("events", []))
+                state = {**state, **(await node(state))}
+                for event in state.get("events", [])[prior_events:]:
+                    await event_sink(event)
+            return state
 
-    app = build_graph()
-    if app is not None:
-        return await app.ainvoke(initial)
-    state = await planner_node(initial)
-    state = {**initial, **state}
-    state = {**state, **(await executor_node(state))}
-    state = {**state, **(await reviewer_node(state))}
-    return state
+        app = build_graph()
+        if app is not None:
+            return await app.ainvoke(initial)
+        state = await planner_node(initial)
+        state = {**initial, **state}
+        state = {**state, **(await executor_node(state))}
+        return {**state, **(await reviewer_node(state))}
+
+    return await asyncio.wait_for(execute(), timeout=get_settings().agent_run_timeout_s)
