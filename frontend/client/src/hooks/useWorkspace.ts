@@ -12,12 +12,12 @@ export function useWorkspace() {
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
-      const projectsResponse = await fetch(`${apiRoot()}/v1/projects`)
+      const projectsResponse = await fetch(`${apiRoot()}/v1/projects`, { credentials: 'include' })
       if (!projectsResponse.ok) throw new Error('Could not load projects')
       const projects = await projectsResponse.json() as Array<{ id: string }>
       const project = projects[0]
       if (!project) throw new Error('No workspace project is available')
-      const workspaceResponse = await fetch(`${apiRoot()}/v1/projects/${project.id}/workspace`)
+      const workspaceResponse = await fetch(`${apiRoot()}/v1/projects/${project.id}/workspace`, { credentials: 'include' })
       if (!workspaceResponse.ok) throw new Error('Could not load workspace')
       const snapshot = await workspaceResponse.json() as WorkspaceSnapshot
       setWorkspace(snapshot)
@@ -37,7 +37,7 @@ export function useWorkspace() {
   const createNote = useCallback(async (module: WorkspaceModule, title: string, content: string) => {
     if (!workspace) return
     const response = await fetch(`${apiRoot()}/v1/projects/${workspace.project.id}/notes`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ module_id: module.id, title, content }),
+      method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ module_id: module.id, title, content }),
     })
     if (!response.ok) throw new Error('Could not create note')
     await refresh()
@@ -46,7 +46,7 @@ export function useWorkspace() {
   const createTask = useCallback(async (module: WorkspaceModule, title: string, description: string) => {
     if (!workspace) return
     const response = await fetch(`${apiRoot()}/v1/projects/${workspace.project.id}/tasks`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ module_id: module.id, title, description }),
+      method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ module_id: module.id, title, description }),
     })
     if (!response.ok) throw new Error('Could not create task')
     await refresh()
@@ -55,7 +55,7 @@ export function useWorkspace() {
   const updateTaskStatus = useCallback(async (taskId: string, status: WorkspaceTaskStatus) => {
     if (!workspace) return
     const response = await fetch(`${apiRoot()}/v1/projects/${workspace.project.id}/tasks/${taskId}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }),
+      method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }),
     })
     if (!response.ok) throw new Error('Could not update task')
     await refresh()

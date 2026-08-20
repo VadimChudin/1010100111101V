@@ -137,3 +137,19 @@ export interface WorkspaceSnapshot {
   tasks: WorkspaceTask[]
   markers: WorkspaceMarker[]
 }
+
+
+export interface AuthUser {
+  id: string
+  github_id: string
+  login: string
+  email?: string
+  avatar_url?: string
+  created_at: string
+}
+
+export interface AuthStatus {
+  authenticated: boolean
+  user?: AuthUser
+  github_configured: boolean
+}

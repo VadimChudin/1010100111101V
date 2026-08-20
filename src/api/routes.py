@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+
+import httpx
 from collections.abc import AsyncIterator
 from uuid import uuid4
 
 from fastapi import APIRouter, Header, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from src.api.auth import current_user, require_project_access, require_run_access, require_user
+from src.auth import AuthStatus, ProjectRole, get_auth_store
+from src.auth.github import GitHubOAuth, GitHubOAuthError
+from src.config import get_settings
 from src.events import get_event_broker
 from src.orchestrator.graph import run_agent
 from src.orchestrator.schemas import AgentPlan
@@ -88,6 +94,50 @@ async def healthz():
     return {"status": "ok"}
 
 
+@router.get("/auth/status", response_model=AuthStatus)
+async def auth_status(request: Request):
+    user = await current_user(request)
+    settings = get_settings()
+    return AuthStatus(authenticated=user is not None, user=user, github_configured=bool(settings.github_oauth_client_id and settings.github_oauth_client_secret))
+
+
+@router.get("/auth/github/login")
+async def github_login():
+    oauth = GitHubOAuth(get_auth_store(get_run_store()))
+    try:
+        return RedirectResponse(await oauth.authorization_url(), status_code=302)
+    except GitHubOAuthError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/auth/github/callback")
+async def github_callback(code: str, state: str):
+    settings = get_settings()
+    oauth = GitHubOAuth(get_auth_store(get_run_store()))
+    try:
+        profile = await oauth.callback(code, state)
+    except (GitHubOAuthError, httpx.HTTPError) as exc:
+        raise HTTPException(status_code=401, detail="GitHub authentication failed") from exc
+    auth_store = get_auth_store(get_run_store())
+    user = await auth_store.upsert_user(profile)
+    await workspace_store().ensure_default_project()
+    await auth_store.claim_unowned_default(user.id)
+    token = await auth_store.create_session(user.id)
+    frontend_url = settings.frontend_origins.split(",")[1] if "," in settings.frontend_origins else settings.frontend_origins
+    response = RedirectResponse(frontend_url, status_code=302)
+    response.set_cookie(settings.session_cookie_name, token, httponly=True, secure=True, samesite="none", max_age=60 * 60 * 24 * 7, path="/")
+    return response
+
+
+@router.post("/auth/logout", status_code=204)
+async def logout(request: Request):
+    settings = get_settings()
+    await get_auth_store(get_run_store()).revoke_session(request.cookies.get(settings.session_cookie_name))
+    response = RedirectResponse(settings.frontend_origins.split(",")[1] if "," in settings.frontend_origins else settings.frontend_origins, status_code=303)
+    response.delete_cookie(settings.session_cookie_name, path="/")
+    return response
+
+
 @router.get("/serena/status")
 async def serena_status():
     client = SerenaClient()
@@ -104,19 +154,29 @@ def workspace_store():
 
 
 @router.get("/projects", response_model=list[WorkspaceProject])
-async def list_projects():
+async def list_projects(request: Request):
     store = workspace_store()
     await store.ensure_default_project()
-    return await store.list_projects()
+    user = await require_user(request)
+    projects = await store.list_projects()
+    if not get_settings().auth_required:
+        return projects
+    allowed = set(await get_auth_store(get_run_store()).projects_for_user(user.id))
+    return [project for project in projects if project.id in allowed]
 
 
 @router.post("/projects", response_model=WorkspaceProject, status_code=201)
-async def create_project(request: ProjectCreateRequest):
-    return await workspace_store().create_project(request)
+async def create_project(payload: ProjectCreateRequest, request: Request):
+    user = await require_user(request)
+    project = await workspace_store().create_project(payload)
+    if get_settings().auth_required:
+        await get_auth_store(get_run_store()).grant_role(project.id, user.id, ProjectRole.OWNER)
+    return project
 
 
 @router.get("/projects/{project_id}/workspace", response_model=WorkspaceSnapshot)
-async def get_workspace(project_id: str):
+async def get_workspace(project_id: str, request: Request):
+    await require_project_access(request, project_id)
     store = workspace_store()
     snapshot = await store.snapshot(project_id)
     if snapshot is None:
@@ -125,47 +185,52 @@ async def get_workspace(project_id: str):
 
 
 @router.post("/projects/{project_id}/modules", response_model=WorkspaceModule, status_code=201)
-async def create_module(project_id: str, request: ModuleCreateRequest):
+async def create_module(project_id: str, payload: ModuleCreateRequest, request: Request):
+    await require_project_access(request, project_id, ProjectRole.EDITOR)
     store = workspace_store()
     if await store.get_project(project_id) is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    return await store.create_module(project_id, request)
+    return await store.create_module(project_id, payload)
 
 
 @router.post("/projects/{project_id}/notes", response_model=WorkspaceNote, status_code=201)
-async def create_note(project_id: str, request: NoteCreateRequest):
+async def create_note(project_id: str, payload: NoteCreateRequest, request: Request):
+    user = await require_project_access(request, project_id, ProjectRole.EDITOR)
     try:
-        return await workspace_store().create_note(project_id, request)
+        return await workspace_store().create_note(project_id, payload, author=user.login)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="Module not found in project") from exc
 
 
 @router.post("/projects/{project_id}/tasks", response_model=WorkspaceTask, status_code=201)
-async def create_workspace_task(project_id: str, request: TaskCreateRequest):
+async def create_workspace_task(project_id: str, payload: TaskCreateRequest, request: Request):
+    await require_project_access(request, project_id, ProjectRole.EDITOR)
     try:
-        return await workspace_store().create_task(project_id, request)
+        return await workspace_store().create_task(project_id, payload)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="Module not found in project") from exc
 
 
 @router.patch("/projects/{project_id}/tasks/{task_id}", response_model=WorkspaceTask)
-async def update_workspace_task(project_id: str, task_id: str, request: TaskStatusRequest):
+async def update_workspace_task(project_id: str, task_id: str, payload: TaskStatusRequest, request: Request):
+    await require_project_access(request, project_id, ProjectRole.EDITOR)
     store = workspace_store()
-    task = await store.set_task_status(task_id, request.status)
+    task = await store.set_task_status(task_id, payload.status)
     if task is None or task.project_id != project_id:
         raise HTTPException(status_code=404, detail="Task not found")
     return task
 
 @router.post("/chat", response_model=ChatRunResponse)
-async def chat(request: ChatRequest):
+async def chat(payload: ChatRequest, request: Request):
+    user = await require_user(request)
     run_id = str(uuid4())
     store = get_run_store()
-    await store.create_run(run_id, request.user_id, request.message)
+    await store.create_run(run_id, user.id, payload.message)
     try:
-        state = await run_agent(request.message, run_id, request.user_id)
+        state = await run_agent(payload.message, run_id, user.id)
         status = str(state.get("status") or "failed")
         answer = str(state.get("review", {}).get("comment", ""))
-        plan = public_plan(state.get("plan"), request.message)
+        plan = public_plan(state.get("plan"), payload.message)
         response_events = list(state.get("events", []))
         await store.append_events(run_id, response_events)
         await store.complete_run(run_id, status, answer, plan.model_dump())
@@ -178,12 +243,13 @@ async def chat(request: ChatRequest):
 
 
 @router.post("/runs")
-async def create_run(request: ChatRequest):
+async def create_run(payload: ChatRequest, request: Request):
+    user = await require_user(request)
     run_id = str(uuid4())
     store = get_run_store()
-    await store.create_run(run_id, request.user_id, request.message)
-    await store.append_events(run_id, [{"type": "run.created", "payload": {"approval_mode": request.approval_mode}}])
-    job = RunJob(run_id=run_id, user_id=request.user_id, task=request.message)
+    await store.create_run(run_id, user.id, payload.message)
+    await store.append_events(run_id, [{"type": "run.created", "payload": {"approval_mode": payload.approval_mode}}])
+    job = RunJob(run_id=run_id, user_id=user.id, task=payload.message)
     queue = get_run_queue()
     try:
         await queue.enqueue(job)
@@ -192,41 +258,40 @@ async def create_run(request: ChatRequest):
         await store.append_events(run_id, [{"type": "run.failed", "payload": {"message": "The run could not be queued."}}])
         raise HTTPException(status_code=503, detail="The run queue is unavailable.") from exc
     asyncio.create_task(RunWorker(queue, store).execute(job), name=f"agent-run-{run_id}")
-    return {"run_id": run_id, "status": "queued", "task": request.message}
+    return {"run_id": run_id, "status": "queued", "task": payload.message}
 
 
 @router.post("/runs/{run_id}/tool-calls", response_model=ToolCallResponse)
-async def invoke_tool_call(run_id: str, request: ToolCallRequest):
-    store = get_run_store()
-    if await store.get_run(run_id) is None:
-        raise HTTPException(status_code=404, detail="Run not found")
-    return await ToolGateway(store).invoke(run_id, request)
+async def invoke_tool_call(run_id: str, payload: ToolCallRequest, request: Request):
+    await require_run_access(request, run_id)
+    return await ToolGateway(get_run_store()).invoke(run_id, payload)
 
 
 @router.get("/runs/{run_id}/approvals")
-async def get_approvals(run_id: str, status: str | None = None):
+async def get_approvals(run_id: str, request: Request, status: str | None = None):
+    await require_run_access(request, run_id)
     store = get_run_store()
-    if await store.get_run(run_id) is None:
-        raise HTTPException(status_code=404, detail="Run not found")
     return {"approvals": [ToolGateway._approval_model(item).model_dump() for item in await store.list_approvals(run_id, status)]}
 
 
 @router.post("/runs/{run_id}/approvals/{approval_id}/decision", response_model=ToolCallResponse)
-async def resolve_approval(run_id: str, approval_id: str, request: ApprovalDecisionRequest):
+async def resolve_approval(run_id: str, approval_id: str, payload: ApprovalDecisionRequest, request: Request):
+    await require_run_access(request, run_id)
     store = get_run_store()
     approval = await store.get_approval(approval_id)
     if approval is None or approval.run_id != run_id:
         raise HTTPException(status_code=404, detail="Approval not found")
     if approval.status != "pending":
         raise HTTPException(status_code=409, detail="Approval has already been resolved")
-    response = await ToolGateway(store).resolve(approval_id, request.approved, request.grant_scope)
+    response = await ToolGateway(store).resolve(approval_id, payload.approved, payload.grant_scope)
     if response is None:
         raise HTTPException(status_code=404, detail="Approval not found")
     return response
 
 
 @router.get("/runs/{run_id}", response_model=RunDetailResponse)
-async def get_run(run_id: str):
+async def get_run(run_id: str, request: Request):
+    await require_run_access(request, run_id)
     record = await get_run_store().get_run(run_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -243,9 +308,8 @@ async def get_run(run_id: str):
 
 
 @router.get("/runs/{run_id}/events")
-async def get_run_events(run_id: str, after_sequence: int = 0):
-    if await get_run_store().get_run(run_id) is None:
-        raise HTTPException(status_code=404, detail="Run not found")
+async def get_run_events(run_id: str, request: Request, after_sequence: int = 0):
+    await require_run_access(request, run_id)
     return {"events": await get_run_store().get_events(run_id, after_sequence)}
 
 
@@ -256,9 +320,8 @@ async def stream_run_events(
     after_sequence: int = 0,
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
 ):
+    await require_run_access(request, run_id)
     store = get_run_store()
-    if await store.get_run(run_id) is None:
-        raise HTTPException(status_code=404, detail="Run not found")
 
     try:
         cursor = max(after_sequence, int(last_event_id or "0"))

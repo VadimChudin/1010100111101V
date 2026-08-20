@@ -1,6 +1,8 @@
 from __future__ import annotations
 from uuid import uuid4
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from src.auth import get_auth_store
+from src.config import get_settings
 from src.orchestrator.graph import run_agent
 from src.storage import get_run_store
 
@@ -8,7 +10,13 @@ router = APIRouter()
 
 @router.websocket("/v1/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    settings = get_settings()
+    user = await get_auth_store(get_run_store()).get_session_user(websocket.cookies.get(settings.session_cookie_name))
+    if settings.auth_required and user is None:
+        await websocket.close(code=4401)
+        return
     await websocket.accept()
+    user_id = user.id if user is not None else "anonymous"
     try:
         payload = await websocket.receive_json()
         message = str(payload.get("message", "")).strip()
@@ -17,11 +25,11 @@ async def websocket_endpoint(websocket: WebSocket):
             return
         run_id = str(uuid4())
         store = get_run_store()
-        await store.create_run(run_id, str(payload.get("user_id", "anonymous")), message, status="running")
+        await store.create_run(run_id, user_id, message, status="running")
         started = (await store.append_events(run_id, [{"type": "run.started", "payload": {"run_id": run_id}}]))[0]
         await websocket.send_json({"run_id": run_id, **started})
 
-        state = await run_agent(message, run_id, str(payload.get("user_id", "anonymous")))
+        state = await run_agent(message, run_id, user_id)
         persisted_events = await store.append_events(run_id, list(state.get("events", [])))
         for event in persisted_events:
             await websocket.send_json({"run_id": run_id, **event})

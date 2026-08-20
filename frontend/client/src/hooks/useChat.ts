@@ -112,13 +112,13 @@ export function useChat() {
     setEvents([])
     setMessages((current) => [...current, { id: `user-${Date.now()}`, role: 'user', content: message, timestamp: new Date().toISOString() }])
     try {
-      const response = await fetch(`${apiUrl.replace(/\/$/, '')}/v1/runs`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, approval_mode: approvalMode }) })
+      const response = await fetch(`${apiUrl.replace(/\/$/, '')}/v1/runs`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, approval_mode: approvalMode }) })
       if (!response.ok) throw new Error(`Request failed with ${response.status}`)
       const data = await response.json() as RunSubmission
       setRunId(data.run_id)
       setMessages((current) => [...current, { id: `queued-${Date.now()}`, role: 'assistant', content: 'Run queued. Connecting to the live execution timeline.', timestamp: new Date().toISOString(), runId: data.run_id, stage: 'planning' }])
 
-      const source = new EventSource(`${apiUrl.replace(/\/$/, '')}/v1/runs/${data.run_id}/stream`)
+      const source = new EventSource(`${apiUrl.replace(/\/$/, '')}/v1/runs/${data.run_id}/stream`, { withCredentials: true })
       source.addEventListener('timeline', (transportEvent) => {
         try {
           appendEvent(JSON.parse((transportEvent as MessageEvent).data) as AgentEvent)

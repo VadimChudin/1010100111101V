@@ -20,6 +20,13 @@ class Settings(BaseSettings):
     enable_unsafe_shell: bool = False
     sentry_dsn: str = ""
     observability_enabled: bool = True
+    auth_required: bool = False
+    session_secret: str = ""
+    session_cookie_name: str = "agent_platform_session"
+    frontend_origins: str = "http://localhost:5173,https://frontend-swart-alpha-20.vercel.app"
+    github_oauth_client_id: str = ""
+    github_oauth_client_secret: str = ""
+    github_oauth_redirect_uri: str = "https://app-production-cc16.up.railway.app/v1/auth/github/callback"
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore", case_sensitive=False)
 
 @lru_cache
