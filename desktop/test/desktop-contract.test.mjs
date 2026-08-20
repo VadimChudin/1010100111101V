@@ -19,7 +19,21 @@ test('desktop renderer remains isolated from Node and credentials', async () => 
   assert.match(main, /X-Desktop-Authorization/)
   assert.match(preload, /contextBridge\.exposeInMainWorld\('agentRoom'/)
   assert.match(preload, /beginAuthorization/)
-  assert.doesNotMatch(preload, /sessionToken|requestSecret|execFile|spawn/)
+  assert.match(preload, /listGitHubRepositories/)
+  assert.match(preload, /chooseCloneDestination/)
+  assert.match(preload, /cloneGitHubRepository/)
+  assert.doesNotMatch(preload, /sessionToken|requestSecret|access_token|GIT_ASKPASS|execFile|spawn/)
+})
+
+test('desktop GitHub clone flow validates server source and uses an ephemeral askpass credential boundary', async () => {
+  const main = await source('main.mjs')
+  assert.match(main, /desktop:list-github-repositories/)
+  assert.match(main, /desktop:clone-github-repository/)
+  assert.match(main, /clone-source/)
+  assert.match(main, /GIT_ASKPASS/)
+  assert.match(main, /GIT_TERMINAL_PROMPT: '0'/)
+  assert.match(main, /readdir\(destination\)/)
+  assert.match(main, /rm\(askpass\.directory/)
 })
 
 test('desktop component commands retain local-only Serena boundary and verified runtime bootstrap', async () => {

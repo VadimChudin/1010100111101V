@@ -1,4 +1,4 @@
-from .models import AuthStatus, AuthUser, DesktopAuthorizationStart, DesktopAuthorizationStatus, GitHubProfile, ProjectRole
+from .models import AuthStatus, AuthUser, DesktopAuthorizationStart, DesktopAuthorizationStatus, GitHubCloneSource, GitHubProfile, GitHubRepository, ProjectRole
 from .store import AuthStore, get_auth_store
 
 __all__ = [
@@ -7,7 +7,9 @@ __all__ = [
     "AuthUser",
     "DesktopAuthorizationStart",
     "DesktopAuthorizationStatus",
+    "GitHubCloneSource",
     "GitHubProfile",
+    "GitHubRepository",
     "ProjectRole",
     "get_auth_store",
 ]

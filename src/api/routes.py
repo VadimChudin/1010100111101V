@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from src.api.auth import current_user, require_project_access, require_run_access, require_user
-from src.auth import AuthStatus, DesktopAuthorizationStart, DesktopAuthorizationStatus, ProjectRole, get_auth_store
+from src.auth import AuthStatus, DesktopAuthorizationStart, DesktopAuthorizationStatus, GitHubCloneSource, GitHubRepository, ProjectRole, get_auth_store
 from src.auth.github import GitHubOAuth, GitHubOAuthError
 from src.config import get_settings
 from src.events import get_event_broker
@@ -184,10 +184,11 @@ async def github_callback(code: str, state: str):
     desktop_request_id = await auth_store.desktop_request_for_state(state)
     oauth = GitHubOAuth(auth_store)
     try:
-        profile = await oauth.callback(code, state)
+        profile, github_token, github_scopes = await oauth.callback(code, state)
     except (GitHubOAuthError, httpx.HTTPError) as exc:
         raise HTTPException(status_code=401, detail="GitHub authentication failed") from exc
     user = await auth_store.upsert_user(profile)
+    await auth_store.save_github_credential(user.id, github_token, github_scopes)
     await workspace_store().ensure_default_project()
     await auth_store.claim_unowned_default(user.id)
     if desktop_request_id:
@@ -205,6 +206,61 @@ async def github_callback(code: str, state: str):
     response = RedirectResponse(frontend_url, status_code=302)
     response.set_cookie(settings.session_cookie_name, token, httponly=True, secure=True, samesite="none", max_age=60 * 60 * 24 * 7, path="/")
     return response
+
+
+@router.get("/auth/github/repositories", response_model=list[GitHubRepository])
+async def list_github_repositories(request: Request):
+    user = await require_user(request)
+    token = await get_auth_store(get_run_store()).github_token_for_user(user.id)
+    if not token:
+        raise HTTPException(status_code=409, detail="GitHub repository access requires a fresh GitHub authorization")
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    params = {"visibility": "all", "affiliation": "owner,collaborator,organization_member", "sort": "updated", "direction": "desc", "per_page": 100}
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get("https://api.github.com/user/repos", headers=headers, params=params)
+            response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="Could not retrieve GitHub repositories") from exc
+    return [
+        GitHubRepository(
+            id=str(item["id"]),
+            full_name=str(item["full_name"]),
+            description=item.get("description"),
+            private=bool(item.get("private")),
+            default_branch=str(item.get("default_branch") or "main"),
+            html_url=str(item["html_url"]),
+            clone_url=str(item["clone_url"]),
+            updated_at=item.get("updated_at"),
+        )
+        for item in response.json()
+    ]
+
+
+@router.get("/auth/github/repositories/{repository_id}/clone-source", response_model=GitHubCloneSource)
+async def github_clone_source(repository_id: str, request: Request):
+    user = await require_user(request)
+    token = await get_auth_store(get_run_store()).github_token_for_user(user.id)
+    if not token:
+        raise HTTPException(status_code=409, detail="GitHub repository access requires a fresh GitHub authorization")
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get(f"https://api.github.com/repositories/{repository_id}", headers=headers)
+            response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            raise HTTPException(status_code=404, detail="GitHub repository is not available to this account") from exc
+        raise HTTPException(status_code=502, detail="Could not resolve GitHub repository") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="Could not resolve GitHub repository") from exc
+    item = response.json()
+    return GitHubCloneSource(
+        id=str(item["id"]),
+        full_name=str(item["full_name"]),
+        clone_url=str(item["clone_url"]),
+        access_token=token,
+    )
 
 
 @router.post("/auth/logout", status_code=204)

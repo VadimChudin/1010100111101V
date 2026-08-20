@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import secrets
 import sqlite3
@@ -8,6 +9,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
+from cryptography.fernet import Fernet, InvalidToken
+
+from src.config import get_settings
 from src.storage import SQLiteRunStore
 
 from .models import AuthUser, GitHubProfile, ProjectRole
@@ -61,6 +65,14 @@ CREATE TABLE IF NOT EXISTS project_members (
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_auth_desktop_authorizations_expiry ON auth_desktop_authorizations(expires_at);
 CREATE INDEX IF NOT EXISTS idx_project_members_user ON project_members(user_id);
+
+CREATE TABLE IF NOT EXISTS github_oauth_credentials (
+    user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    encrypted_token TEXT NOT NULL,
+    scopes TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -92,6 +104,14 @@ class AuthStore:
         connection.execute("PRAGMA busy_timeout = 10000")
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
+
+    @staticmethod
+    def _credential_cipher() -> Fernet:
+        secret = get_settings().session_secret
+        if not secret:
+            raise RuntimeError("SESSION_SECRET is required to protect GitHub integration credentials")
+        key = base64.urlsafe_b64encode(hashlib.sha256(secret.encode("utf-8")).digest())
+        return Fernet(key)
 
     async def initialize(self) -> None:
         if self._initialized:
@@ -258,6 +278,42 @@ class AuthStore:
     async def upsert_user(self, profile: GitHubProfile) -> AuthUser:
         await self.initialize()
         return await asyncio.to_thread(self._upsert_user_sync, profile)
+
+    def _save_github_credential_sync(self, user_id: str, token: str, scopes: list[str]) -> None:
+        now = timestamp()
+        encrypted_token = self._credential_cipher().encrypt(token.encode("utf-8")).decode("ascii")
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO github_oauth_credentials (user_id, encrypted_token, scopes, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                  encrypted_token = excluded.encrypted_token,
+                  scopes = excluded.scopes,
+                  updated_at = excluded.updated_at
+                """,
+                (user_id, encrypted_token, ",".join(sorted(set(scopes))), now, now),
+            )
+
+    async def save_github_credential(self, user_id: str, token: str, scopes: list[str]) -> None:
+        await self.initialize()
+        await asyncio.to_thread(self._save_github_credential_sync, user_id, token, scopes)
+
+    def _github_token_for_user_sync(self, user_id: str) -> str | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT encrypted_token FROM github_oauth_credentials WHERE user_id = ?", (user_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            return self._credential_cipher().decrypt(str(row["encrypted_token"]).encode("ascii")).decode("utf-8")
+        except InvalidToken:
+            return None
+
+    async def github_token_for_user(self, user_id: str) -> str | None:
+        await self.initialize()
+        return await asyncio.to_thread(self._github_token_for_user_sync, user_id)
 
     def _create_session_sync(self, user_id: str) -> str:
         token = secrets.token_urlsafe(48)

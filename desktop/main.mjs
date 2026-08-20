@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, safeStorage, session, shell } from
 import { execFile, spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -84,6 +84,27 @@ function startDetached(command, args, options = {}) {
   return child.pid
 }
 
+async function ensureGit() {
+  const executable = process.platform === 'win32' ? 'git.exe' : 'git'
+  const current = await run(executable, ['--version'], { timeout: 20_000 })
+  if (current.ok) return executable
+  if (process.platform === 'win32') {
+    const install = await run('winget.exe', ['install', '--id', 'Git.Git', '--exact', '--source', 'winget', '--accept-package-agreements', '--accept-source-agreements'], { timeout: 600_000 })
+    if (install.ok) {
+      const installed = await run(executable, ['--version'], { timeout: 20_000 })
+      if (installed.ok) return executable
+    }
+  }
+  throw new Error('Git is required to open a project. Install Git for Windows and restart Agent Room.')
+}
+
+async function ensureGitWorkspace(workspacePath) {
+  const git = await ensureGit()
+  const result = await run(git, ['-C', workspacePath, 'rev-parse', '--is-inside-work-tree'], { timeout: 20_000 })
+  if (!result.ok || result.stdout !== 'true') throw new Error('Select a folder that contains a Git project, or choose a GitHub repository to clone.')
+  return git
+}
+
 async function bootstrapRuntime() {
   const paths = runtimePaths()
   if (existsSync(paths.binary)) return paths
@@ -105,6 +126,50 @@ async function requestPairing(sessionToken) {
   })
   if (!response.ok) throw new Error(`Cloud pairing request failed (${response.status})`)
   return response.json()
+}
+
+async function githubApiRequest(sessionToken, pathname) {
+  const response = await fetch(`${API_URL}/v1${pathname}`, {
+    headers: { Cookie: `${COOKIE_NAME}=${sessionToken}` },
+  })
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '')
+    throw new Error(`GitHub request failed (${response.status})${detail ? `: ${detail}` : ''}`)
+  }
+  return response.json()
+}
+
+async function createGitAskpass(accessToken) {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'agent-room-git-'))
+  const scriptPath = path.join(directory, process.platform === 'win32' ? 'askpass.cmd' : 'askpass.sh')
+  const script = process.platform === 'win32'
+    ? '@echo off\r\necho %1 | findstr /I "username" >nul\r\nif not errorlevel 1 (echo x-access-token) else (echo %AGENT_ROOM_GIT_TOKEN%)\r\n'
+    : '#!/bin/sh\ncase "$1" in *Username*) printf "%s\\n" "x-access-token" ;; *) printf "%s\\n" "$AGENT_ROOM_GIT_TOKEN" ;; esac\n'
+  await writeFile(scriptPath, script, { mode: 0o700 })
+  return { directory, scriptPath }
+}
+
+async function cloneGitHubRepository(sessionToken, repositoryId, destination) {
+  if (!repositoryId || !destination) throw new Error('A repository and an empty destination folder are required.')
+  const entries = await readdir(destination)
+  if (entries.length > 0) throw new Error('Choose an empty folder for the repository clone.')
+  const source = await githubApiRequest(sessionToken, `/auth/github/repositories/${encodeURIComponent(repositoryId)}/clone-source`)
+  const git = await ensureGit()
+  const askpass = await createGitAskpass(source.access_token)
+  const cloneEnvironment = {
+    ...process.env,
+    GIT_ASKPASS: askpass.scriptPath,
+    AGENT_ROOM_GIT_TOKEN: source.access_token,
+    GIT_TERMINAL_PROMPT: '0',
+  }
+  try {
+    const result = await run(git, ['clone', '--origin', 'origin', '--', source.clone_url, destination], { env: cloneEnvironment, timeout: 900_000 })
+    if (!result.ok) throw new Error(`Repository clone failed: ${result.stderr || result.stdout || 'Git returned a non-zero exit code'}`)
+  } finally {
+    delete cloneEnvironment.AGENT_ROOM_GIT_TOKEN
+    await rm(askpass.directory, { recursive: true, force: true })
+  }
+  return { workspacePath: destination, repository: { id: source.id, fullName: source.full_name } }
 }
 
 async function configureSerena(paths, workspacePath) {
@@ -190,7 +255,7 @@ function createWorkspaceWindow() {
 
 ipcMain.handle('desktop:status', async () => {
   const state = await readState()
-  return { connected: Boolean(state.sessionToken), user: state.user || null, workspacePath: state.workspacePath || '', version: app.getVersion() }
+  return { connected: Boolean(state.sessionToken), user: state.user || null, workspacePath: state.workspacePath || '', projectSource: state.projectSource || null, version: app.getVersion() }
 })
 
 ipcMain.handle('desktop:begin-authorization', async () => {
@@ -233,15 +298,46 @@ ipcMain.handle('desktop:choose-workspace', async () => {
   const selection = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'], title: 'Select a local Git workspace' })
   if (selection.canceled || !selection.filePaths[0]) return null
   const workspacePath = selection.filePaths[0]
-  await patchState({ workspacePath })
+  await ensureGitWorkspace(workspacePath)
+  await patchState({ workspacePath, projectSource: { kind: 'local' } })
   return workspacePath
+})
+
+ipcMain.handle('desktop:list-github-repositories', async () => {
+  const state = await readState()
+  if (!state.sessionToken) throw new Error('Browser authorization is required before loading GitHub repositories')
+  return githubApiRequest(state.sessionToken, '/auth/github/repositories')
+})
+
+ipcMain.handle('desktop:choose-clone-destination', async () => {
+  const selection = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openDirectory', 'createDirectory'],
+    title: 'Choose an empty destination folder for the repository clone',
+  })
+  if (selection.canceled || !selection.filePaths[0]) return null
+  const destination = selection.filePaths[0]
+  const entries = await readdir(destination)
+  if (entries.length > 0) throw new Error('Choose an empty folder for the repository clone.')
+  return destination
+})
+
+ipcMain.handle('desktop:clone-github-repository', async (_event, payload) => {
+  const state = await readState()
+  if (!state.sessionToken) throw new Error('Browser authorization is required before cloning a repository')
+  const result = await cloneGitHubRepository(state.sessionToken, payload?.repositoryId, payload?.destination)
+  await patchState({
+    workspacePath: result.workspacePath,
+    projectSource: { kind: 'github', repositoryId: result.repository.id, repositoryFullName: result.repository.fullName },
+  })
+  return result
 })
 
 ipcMain.handle('desktop:install-and-pair', async (_event, payload) => {
   const state = await readState()
   if (!state.sessionToken) throw new Error('Browser authorization is required before pairing this computer')
   const workspacePath = state.workspacePath
-  if (!workspacePath || payload?.workspacePath !== workspacePath) throw new Error('Choose a workspace using the native folder picker before installation')
+  if (!workspacePath || payload?.workspacePath !== workspacePath) throw new Error('Choose a workspace using the native source chooser before installation')
+  await ensureGitWorkspace(workspacePath)
   const paths = await bootstrapRuntime()
   const deviceName = `Agent Room Desktop · ${os.hostname()}`
   const init = await run(paths.binary, ['init', '--cloud-url', API_URL, '--project-id', 'default', '--workspace-root', workspacePath, '--state-dir', path.dirname(paths.config), '--device-name', deviceName])

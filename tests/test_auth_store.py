@@ -65,3 +65,21 @@ async def test_desktop_authorization_is_secret_bound_and_single_claim(tmp_path):
     assert claimed_user.id == user.id
     assert (await store.get_session_user(token)).id == user.id
     assert await store.claim_desktop_authorization(request_id, request_secret) is None
+
+
+@pytest.mark.asyncio
+async def test_github_integration_token_is_encrypted_and_bound_to_user(tmp_path, monkeypatch):
+    from src.config import get_settings
+
+    monkeypatch.setenv("SESSION_SECRET", "test-session-secret-for-github-credential")
+    get_settings.cache_clear()
+    try:
+        run_store = SQLiteRunStore(str(tmp_path / "agent-state.db"))
+        store = get_auth_store(run_store)
+        user = await store.upsert_user(GitHubProfile(github_id="91", login="repo-owner", email="owner@example.com"))
+        await store.save_github_credential(user.id, "github-token-for-test", ["repo", "read:user"])
+
+        assert await store.github_token_for_user(user.id) == "github-token-for-test"
+        assert await store.github_token_for_user("unknown-user") is None
+    finally:
+        get_settings.cache_clear()

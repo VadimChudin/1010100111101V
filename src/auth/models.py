@@ -44,3 +44,21 @@ class DesktopAuthorizationStatus(BaseModel):
     status: str
     expires_at: str
     user: AuthUser | None = None
+
+
+class GitHubRepository(BaseModel):
+    id: str
+    full_name: str
+    description: str | None = None
+    private: bool
+    default_branch: str
+    html_url: str
+    clone_url: str
+    updated_at: str | None = None
+
+
+class GitHubCloneSource(BaseModel):
+    id: str
+    full_name: str
+    clone_url: str
+    access_token: str

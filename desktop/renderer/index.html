@@ -28,12 +28,37 @@
         <p class="hint" id="auth-expiry"></p>
       </section>
 
+      <section class="panel hidden" id="source-panel">
+        <p class="eyebrow">PROJECT SOURCE</p>
+        <h2>Choose the project on this computer.</h2>
+        <p class="lead">Open an existing local Git project or clone one of the repositories available to your GitHub account. Source code stays on this device.</p>
+        <div class="source-options" role="group" aria-label="Project source">
+          <button class="source-option active" id="local-source-button" type="button"><strong>Local folder</strong><span>Open an existing Git project</span></button>
+          <button class="source-option" id="github-source-button" type="button"><strong>GitHub repository</strong><span>Clone from your authorized account</span></button>
+        </div>
+        <div class="source-section" id="local-source-section">
+          <label class="field-label" for="local-workspace-path">Local Git workspace</label>
+          <div class="field-row"><input id="local-workspace-path" readonly placeholder="Select a local Git workspace" /><button class="secondary" id="choose-workspace-button">Choose folder</button></div>
+          <p class="hint">The selected folder must already be a Git project. No source files are uploaded during setup.</p>
+        </div>
+        <div class="source-section hidden" id="github-source-section">
+          <div class="source-toolbar"><p class="field-label">Repositories available to your GitHub account</p><button class="secondary compact" id="refresh-repositories-button" type="button">Load repositories</button></div>
+          <div class="repository-list" id="repository-list"><p class="repository-empty">Load your repositories to choose one.</p></div>
+          <label class="field-label" for="clone-destination">Empty clone destination</label>
+          <div class="field-row"><input id="clone-destination" readonly placeholder="Choose an empty folder" /><button class="secondary" id="choose-clone-destination-button" type="button">Choose folder</button></div>
+          <button class="primary source-action" id="clone-repository-button" type="button" disabled>Clone selected repository</button>
+          <p class="hint" id="github-source-note">Repository access is verified by the cloud before cloning. Your GitHub credential is not exposed to this window.</p>
+          <button class="link reconnect" id="reconnect-github-button" type="button">Reconnect GitHub or refresh repository access</button>
+        </div>
+        <p class="hint" id="source-note">Select a local Git project or switch to GitHub repositories.</p>
+      </section>
+
       <section class="panel hidden" id="setup-panel">
         <p class="eyebrow">LOCAL SETUP</p>
         <h2>Prepare this computer</h2>
-        <p class="lead">Choose the local Git workspace. The runtime will register this device and start its durable synchronization loop.</p>
-        <label class="field-label" for="workspace-path">Local workspace</label>
-        <div class="field-row"><input id="workspace-path" readonly placeholder="Select a Git workspace" /><button class="secondary" id="choose-workspace-button">Choose folder</button></div>
+        <p class="lead">The selected project is ready. Install the local runtime, register this device, and start durable synchronization.</p>
+        <label class="field-label" for="workspace-path">Selected workspace</label>
+        <div class="field-row"><input id="workspace-path" readonly placeholder="Project source not selected" /></div>
         <div class="component-list" id="component-list">
           <div class="component"><span class="status idle" id="runtime-status"></span><div><strong>Agent Room Runtime</strong><small id="runtime-detail">Ready to install</small></div></div>
           <div class="component"><span class="status idle" id="serena-status"></span><div><strong>Serena</strong><small id="serena-detail">Read-only semantic navigation</small></div></div>

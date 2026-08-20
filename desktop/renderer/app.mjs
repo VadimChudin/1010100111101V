@@ -1,12 +1,26 @@
 const panels = {
   intro: document.querySelector('#intro-panel'),
   authorizing: document.querySelector('#authorizing-panel'),
+  source: document.querySelector('#source-panel'),
   setup: document.querySelector('#setup-panel'),
   ready: document.querySelector('#ready-panel'),
 }
 const connectButton = document.querySelector('#connect-button')
 const retryBrowserButton = document.querySelector('#retry-browser-button')
+const localSourceButton = document.querySelector('#local-source-button')
+const githubSourceButton = document.querySelector('#github-source-button')
+const localSourceSection = document.querySelector('#local-source-section')
+const githubSourceSection = document.querySelector('#github-source-section')
 const chooseWorkspaceButton = document.querySelector('#choose-workspace-button')
+const localWorkspacePath = document.querySelector('#local-workspace-path')
+const refreshRepositoriesButton = document.querySelector('#refresh-repositories-button')
+const repositoryList = document.querySelector('#repository-list')
+const chooseCloneDestinationButton = document.querySelector('#choose-clone-destination-button')
+const cloneDestination = document.querySelector('#clone-destination')
+const cloneRepositoryButton = document.querySelector('#clone-repository-button')
+const githubSourceNote = document.querySelector('#github-source-note')
+const reconnectGitHubButton = document.querySelector('#reconnect-github-button')
+const sourceNote = document.querySelector('#source-note')
 const installButton = document.querySelector('#install-button')
 const openWorkspaceButton = document.querySelector('#open-workspace-button')
 const diagnosticsButton = document.querySelector('#diagnostics-button')
@@ -18,6 +32,10 @@ const readyWorkspace = document.querySelector('#ready-workspace')
 const buildLabel = document.querySelector('#build-label')
 
 let selectedWorkspace = ''
+let selectedRepository = null
+let selectedCloneDestination = ''
+let repositories = []
+let sourceMode = 'local'
 let authorizationPoll = null
 
 function showPanel(name) {
@@ -35,17 +53,102 @@ function setSetupNote(text) {
   setupNote.textContent = text
 }
 
+function setSourceMode(mode) {
+  sourceMode = mode
+  const local = mode === 'local'
+  localSourceButton.classList.toggle('active', local)
+  githubSourceButton.classList.toggle('active', !local)
+  localSourceSection.classList.toggle('hidden', !local)
+  githubSourceSection.classList.toggle('hidden', local)
+  sourceNote.textContent = local
+    ? 'Select a local Git project to prepare this computer.'
+    : 'Choose a repository, then select an empty local destination for its clone.'
+  if (!local && repositories.length === 0) loadGitHubRepositories()
+}
+
+function continueToSetup(workspace, sourceDetail) {
+  selectedWorkspace = workspace
+  workspacePath.value = workspace
+  installButton.disabled = false
+  setSetupNote(`${sourceDetail} Ready to install the loopback-only local runtime and pair this computer.`)
+  showPanel('setup')
+}
+
+function renderRepositories() {
+  repositoryList.replaceChildren()
+  if (repositories.length === 0) {
+    const message = document.createElement('p')
+    message.className = 'repository-empty'
+    message.textContent = 'No repositories were returned for this GitHub account.'
+    repositoryList.append(message)
+    return
+  }
+  for (const repository of repositories) {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = 'repository-row'
+    button.classList.toggle('selected', selectedRepository?.id === repository.id)
+    const name = document.createElement('strong')
+    name.textContent = repository.full_name
+    const meta = document.createElement('span')
+    const visibility = repository.private ? 'Private' : 'Public'
+    meta.textContent = `${visibility} · ${repository.default_branch || 'default branch'}`
+    const description = document.createElement('small')
+    description.textContent = repository.description || 'No description'
+    button.append(name, meta, description)
+    button.addEventListener('click', () => {
+      selectedRepository = repository
+      renderRepositories()
+      updateCloneAction()
+      githubSourceNote.textContent = `Selected ${repository.full_name}. Choose an empty folder for the local clone.`
+    })
+    repositoryList.append(button)
+  }
+}
+
+function updateCloneAction() {
+  cloneRepositoryButton.disabled = !(selectedRepository && selectedCloneDestination)
+}
+
+async function loadGitHubRepositories() {
+  refreshRepositoriesButton.disabled = true
+  githubSourceNote.textContent = 'Loading repositories available to your authorized GitHub account…'
+  try {
+    repositories = await window.agentRoom.listGitHubRepositories()
+    selectedRepository = repositories.find((repository) => repository.id === selectedRepository?.id) || null
+    renderRepositories()
+    updateCloneAction()
+    githubSourceNote.textContent = repositories.length
+      ? 'Select a repository. Private and public repositories are shown when your GitHub authorization allows them.'
+      : 'No repositories were returned. You can refresh after adjusting GitHub access.'
+  } catch (error) {
+    repositories = []
+    selectedRepository = null
+    renderRepositories()
+    updateCloneAction()
+    githubSourceNote.textContent = `${error.message} Reconnect GitHub if this desktop authorization was granted before repository access was enabled.`
+  } finally {
+    refreshRepositoriesButton.disabled = false
+  }
+}
+
 async function restoreState() {
   const status = await window.agentRoom.status()
   buildLabel.textContent = `Agent Room Desktop · ${status.version}`
   if (status.workspacePath) {
     selectedWorkspace = status.workspacePath
     workspacePath.value = selectedWorkspace
+    localWorkspacePath.value = status.projectSource?.kind === 'local' ? selectedWorkspace : ''
     installButton.disabled = false
   }
   if (status.connected) {
-    showPanel('setup')
-    setSetupNote(`Connected as ${status.user?.login ?? 'GitHub user'}. Select the repository stored on this computer.`)
+    if (status.workspacePath) {
+      showPanel('setup')
+      setSetupNote(`Connected as ${status.user?.login ?? 'GitHub user'}. The saved local project is ready to be paired again if needed.`)
+    } else {
+      showPanel('source')
+      sourceNote.textContent = `Connected as ${status.user?.login ?? 'GitHub user'}. Choose the project source for this computer.`
+    }
   }
 }
 
@@ -69,8 +172,8 @@ async function pollAuthorization() {
       window.clearInterval(authorizationPoll)
       authorizationPoll = null
       const connected = await window.agentRoom.claimAuthorization()
-      showPanel('setup')
-      setSetupNote(`Connected as ${connected.user.login}. Select the repository stored on this computer.`)
+      showPanel('source')
+      sourceNote.textContent = `Connected as ${connected.user.login}. Choose the project source for this computer.`
       return
     }
     if (result.status === 'expired') {
@@ -90,12 +193,50 @@ async function pollAuthorization() {
 }
 
 async function chooseWorkspace() {
-  const folder = await window.agentRoom.chooseWorkspace()
-  if (!folder) return
-  selectedWorkspace = folder
-  workspacePath.value = folder
-  installButton.disabled = false
-  setSetupNote('Ready. Installation creates only outbound local synchronization and a loopback-only Serena endpoint.')
+  try {
+    const folder = await window.agentRoom.chooseWorkspace()
+    if (!folder) return
+    localWorkspacePath.value = folder
+    continueToSetup(folder, 'Local Git project selected.')
+  } catch (error) {
+    sourceNote.textContent = error.message
+  }
+}
+
+async function chooseCloneDestination() {
+  try {
+    const folder = await window.agentRoom.chooseCloneDestination()
+    if (!folder) return
+    selectedCloneDestination = folder
+    cloneDestination.value = folder
+    updateCloneAction()
+    githubSourceNote.textContent = selectedRepository
+      ? `Ready to clone ${selectedRepository.full_name} into the selected empty folder.`
+      : 'Choose a repository to continue.'
+  } catch (error) {
+    githubSourceNote.textContent = error.message
+  }
+}
+
+async function cloneSelectedRepository() {
+  if (!selectedRepository || !selectedCloneDestination) return
+  cloneRepositoryButton.disabled = true
+  refreshRepositoriesButton.disabled = true
+  chooseCloneDestinationButton.disabled = true
+  githubSourceNote.textContent = `Cloning ${selectedRepository.full_name}. Private credentials remain inside the desktop main process…`
+  try {
+    const result = await window.agentRoom.cloneGitHubRepository({
+      repositoryId: selectedRepository.id,
+      destination: selectedCloneDestination,
+    })
+    continueToSetup(result.workspacePath, `GitHub repository ${result.repository.fullName} cloned locally.`)
+  } catch (error) {
+    githubSourceNote.textContent = error.message
+    updateCloneAction()
+  } finally {
+    refreshRepositoriesButton.disabled = false
+    chooseCloneDestinationButton.disabled = false
+  }
 }
 
 async function installAndPair() {
@@ -124,7 +265,13 @@ async function installAndPair() {
 
 connectButton.addEventListener('click', startAuthorization)
 retryBrowserButton.addEventListener('click', () => window.agentRoom.reopenAuthorization())
+localSourceButton.addEventListener('click', () => setSourceMode('local'))
+githubSourceButton.addEventListener('click', () => setSourceMode('github'))
 chooseWorkspaceButton.addEventListener('click', chooseWorkspace)
+refreshRepositoriesButton.addEventListener('click', loadGitHubRepositories)
+chooseCloneDestinationButton.addEventListener('click', chooseCloneDestination)
+cloneRepositoryButton.addEventListener('click', cloneSelectedRepository)
+reconnectGitHubButton.addEventListener('click', startAuthorization)
 installButton.addEventListener('click', installAndPair)
 openWorkspaceButton.addEventListener('click', () => window.agentRoom.openWorkspace())
 diagnosticsButton.addEventListener('click', async () => window.agentRoom.openDiagnostics())

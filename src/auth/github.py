@@ -40,7 +40,7 @@ class GitHubOAuth:
             {
                 "client_id": self.settings.github_oauth_client_id,
                 "redirect_uri": self.settings.github_oauth_redirect_uri,
-                "scope": "read:user user:email offline_access",
+                "scope": "read:user user:email repo offline_access",
                 "state": state,
                 "code_challenge": pkce_challenge(verifier),
                 "code_challenge_method": "S256",
@@ -61,7 +61,7 @@ class GitHubOAuth:
         request_id, request_secret, state, verifier, expires_at = await self.store.create_desktop_authorization()
         return request_id, request_secret, self._authorization_url(state, verifier), expires_at
 
-    async def callback(self, code: str, state: str) -> GitHubProfile:
+    async def callback(self, code: str, state: str) -> tuple[GitHubProfile, str, list[str]]:
         if not self.configured:
             raise GitHubOAuthError("GitHub OAuth is not configured")
         verifier = await self.store.consume_oauth_state(state)
@@ -80,9 +80,11 @@ class GitHubOAuth:
                 },
             )
             token_response.raise_for_status()
-            token = token_response.json().get("access_token")
+            token_payload = token_response.json()
+            token = token_payload.get("access_token")
             if not token:
                 raise GitHubOAuthError("GitHub did not return an access token")
+            scopes = [scope for scope in str(token_payload.get("scope", "")).replace(",", " ").split() if scope]
             headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
             user_response = await client.get(self.user_url, headers=headers)
             user_response.raise_for_status()
@@ -94,4 +96,4 @@ class GitHubOAuth:
                 emails = emails_response.json()
                 primary = next((item["email"] for item in emails if item.get("primary") and item.get("verified")), None)
                 email = primary or next((item["email"] for item in emails if item.get("verified")), None)
-        return GitHubProfile(github_id=str(user["id"]), login=str(user["login"]), email=email, avatar_url=user.get("avatar_url"))
+        return GitHubProfile(github_id=str(user["id"]), login=str(user["login"]), email=email, avatar_url=user.get("avatar_url")), str(token), scopes
