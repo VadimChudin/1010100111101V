@@ -151,9 +151,22 @@ function createMainWindow() {
     minHeight: 600,
     backgroundColor: '#090d14',
     title: 'Agent Room',
-    webPreferences: { preload: path.join(__dirname, 'preload.mjs'), contextIsolation: true, nodeIntegration: false, sandbox: true },
+    webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true },
   })
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'))
+  if (process.env.AGENT_ROOM_SMOKE_BRIDGE === '1') {
+    mainWindow.webContents.once('did-finish-load', async () => {
+      try {
+        const bridgeReady = await mainWindow.webContents.executeJavaScript("typeof window.agentRoom === 'object' && typeof window.agentRoom.beginAuthorization === 'function'")
+        if (!bridgeReady) throw new Error('renderer preload bridge is unavailable')
+        console.log('AGENT_ROOM_BRIDGE_OK')
+        app.exit(0)
+      } catch (error) {
+        console.error(`AGENT_ROOM_BRIDGE_FAILED: ${error.message}`)
+        app.exit(1)
+      }
+    })
+  }
 }
 
 function createWorkspaceWindow() {

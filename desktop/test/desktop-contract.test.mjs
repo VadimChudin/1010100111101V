@@ -12,11 +12,13 @@ async function source(name) {
 
 test('desktop renderer remains isolated from Node and credentials', async () => {
   const main = await source('main.mjs')
-  const preload = await source('preload.mjs')
+  const preload = await source('preload.cjs')
   assert.match(main, /contextIsolation: true/)
   assert.match(main, /nodeIntegration: false/)
   assert.match(main, /safeStorage\.encryptString/)
   assert.match(main, /X-Desktop-Authorization/)
+  assert.match(preload, /contextBridge\.exposeInMainWorld\('agentRoom'/)
+  assert.match(preload, /beginAuthorization/)
   assert.doesNotMatch(preload, /sessionToken|requestSecret|execFile|spawn/)
 })
 

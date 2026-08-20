@@ -1,6 +1,6 @@
 {
   "name": "agent-room-desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Agent Room paired local runtime desktop test client",
   "homepage": "https://github.com/VadimChudin/1010100111101V",
@@ -13,6 +13,7 @@
     "start": "electron .",
     "typecheck": "tsc --noEmit",
     "test": "node --test test/*.test.mjs",
+    "smoke:bridge": "AGENT_ROOM_SMOKE_BRIDGE=1 xvfb-run -a electron . --no-sandbox",
     "build:dir": "electron-builder --dir",
     "dist": "electron-builder"
   },
@@ -27,7 +28,7 @@
     "asar": true,
     "files": [
       "main.mjs",
-      "preload.mjs",
+      "preload.cjs",
       "renderer/**/*",
       "runtime/**/*",
       "package.json"

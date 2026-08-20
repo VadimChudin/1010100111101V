@@ -42,6 +42,10 @@ jobs:
       - name: Verify desktop contracts
         working-directory: desktop
         run: pnpm test
+      - name: Verify renderer preload bridge
+        if: runner.os == 'Linux'
+        working-directory: desktop
+        run: pnpm run smoke:bridge
       - name: Build platform installer
         working-directory: desktop
         shell: bash
