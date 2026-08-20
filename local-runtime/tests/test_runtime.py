@@ -172,3 +172,30 @@ def test_local_workspace_executor_enforces_boundary_and_typed_operations(tmp_pat
     assert applied["applied"] is True
     assert executor.read_file_range("src/app.py", 1, 1)["lines"] == ["value = 2"]
     assert executor.run_test_profile("version")["exit_code"] == 0
+
+
+def test_release_manifest_uses_the_canonical_versioned_wheel_filename(monkeypatch, tmp_path):
+    import importlib.util
+    import json
+    import sys
+    from pathlib import Path
+
+    script = Path(__file__).parents[1] / "scripts" / "build_release_manifest.py"
+    specification = importlib.util.spec_from_file_location("build_release_manifest", script)
+    assert specification and specification.loader
+    module = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(module)
+
+    dist = tmp_path / "dist"
+    release = tmp_path / "release"
+    dist.mkdir()
+    wheel = dist / "agent_room_runtime-0.1.0-py3-none-any.whl"
+    wheel.write_bytes(b"valid-versioned-wheel")
+    monkeypatch.setattr(sys, "argv", [str(script), "--dist", str(dist), "--output", str(release), "--build", "build-123"])
+
+    module.main()
+
+    manifest = json.loads((release / "runtime-update.json").read_text(encoding="utf-8"))
+    assert manifest["asset_name"] == wheel.name
+    assert "-latest-" not in manifest["asset_name"]
+    assert (release / wheel.name).is_file()

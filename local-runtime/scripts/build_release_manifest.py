@@ -11,7 +11,6 @@ from pathlib import Path
 
 REPOSITORY = "VadimChudin/1010100111101V"
 RELEASE_TAG = "runtime-latest"
-ASSET_NAME = "agent_room_runtime-latest-py3-none-any.whl"
 
 
 def sha256(path: Path) -> str:
@@ -40,21 +39,22 @@ def main() -> None:
         version = str(tomllib.load(handle)["project"]["version"])
 
     output.mkdir(parents=True, exist_ok=True)
-    published_wheel = output / ASSET_NAME
+    asset_name = wheel.name
+    published_wheel = output / asset_name
     shutil.copy2(wheel, published_wheel)
     digest = sha256(published_wheel)
-    asset_url = f"https://github.com/{REPOSITORY}/releases/download/{RELEASE_TAG}/{ASSET_NAME}"
+    asset_url = f"https://github.com/{REPOSITORY}/releases/download/{RELEASE_TAG}/{asset_name}"
     manifest = {
         "schema": 1,
         "version": version,
         "build": arguments.build,
-        "asset_name": ASSET_NAME,
+        "asset_name": asset_name,
         "asset_url": asset_url,
         "sha256": digest,
         "published_at": os.getenv("RELEASE_PUBLISHED_AT", datetime.now(UTC).isoformat()),
     }
     (output / "runtime-update.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    (output / "SHA256SUMS").write_text(f"{digest}  {ASSET_NAME}\n", encoding="utf-8")
+    (output / "SHA256SUMS").write_text(f"{digest}  {asset_name}\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

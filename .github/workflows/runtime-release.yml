@@ -41,4 +41,4 @@ jobs:
         run: |
           gh release delete runtime-latest --yes >/dev/null 2>&1 || true
           gh release create runtime-latest --title "Agent Room Runtime — latest" --notes "Automated verified runtime channel. Build: ${{ github.sha }}" --target "${{ github.sha }}"
-          gh release upload runtime-latest local-runtime/release/agent_room_runtime-latest-py3-none-any.whl local-runtime/release/runtime-update.json local-runtime/release/SHA256SUMS --clobber
+          gh release upload runtime-latest local-runtime/release/*.whl local-runtime/release/runtime-update.json local-runtime/release/SHA256SUMS --clobber

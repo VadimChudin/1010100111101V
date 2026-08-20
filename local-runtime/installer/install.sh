@@ -13,15 +13,16 @@ fi
 
 mkdir -p "${STATE_DIR}/bootstrap"
 MANIFEST="${STATE_DIR}/bootstrap/runtime-update.json"
-WHEEL="${STATE_DIR}/bootstrap/agent_room_runtime-latest-py3-none-any.whl"
+BOOTSTRAP_DIR="${STATE_DIR}/bootstrap"
 
-python3 - "${RELEASE_API}" "${MANIFEST}" "${WHEEL}" <<'PY'
+python3 - "${RELEASE_API}" "${MANIFEST}" "${BOOTSTRAP_DIR}" <<'PY'
 import hashlib
 import json
 import sys
 import urllib.request
+from pathlib import Path
 
-release_api, manifest_path, wheel_path = sys.argv[1:]
+release_api, manifest_path, bootstrap_dir = sys.argv[1:]
 headers = {"Accept": "application/vnd.github+json", "User-Agent": "agent-room-runtime-installer"}
 request = urllib.request.Request(release_api, headers=headers)
 with urllib.request.urlopen(request, timeout=30) as response:
@@ -41,11 +42,13 @@ with urllib.request.urlopen(urllib.request.Request(asset_url, headers=headers), 
 digest = hashlib.sha256(payload).hexdigest()
 if digest != manifest["sha256"]:
     raise SystemExit("runtime checksum verification failed")
+wheel_path = Path(bootstrap_dir) / asset_name
 open(manifest_path, "w", encoding="utf-8").write(json.dumps(manifest, indent=2) + "\n")
-open(wheel_path, "wb").write(payload)
+wheel_path.write_bytes(payload)
 print(f"Verified Agent Room Runtime {manifest['version']} ({manifest['build'][:12]})")
 PY
 
+WHEEL="${BOOTSTRAP_DIR}/$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["asset_name"])' "${MANIFEST}")"
 python3 -m venv "${VENV_DIR}"
 "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check --upgrade pip
 "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check --upgrade "${WHEEL}"
