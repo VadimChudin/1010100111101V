@@ -34,19 +34,19 @@ export function useWorkspace() {
 
   const selectedModule = workspace?.modules.find((module) => module.id === selectedModuleId)
 
-  const createNote = useCallback(async (module: WorkspaceModule, title: string, content: string) => {
+  const createNote = useCallback(async (module: WorkspaceModule, title: string, content: string, sourceRunId?: string) => {
     if (!workspace) return
     const response = await fetch(`${apiRoot()}/v1/projects/${workspace.project.id}/notes`, {
-      method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ module_id: module.id, title, content }),
+      method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ module_id: module.id, title, content, source_run_id: sourceRunId }),
     })
     if (!response.ok) throw new Error('Could not create note')
     await refresh()
   }, [refresh, workspace])
 
-  const createTask = useCallback(async (module: WorkspaceModule, title: string, description: string) => {
+  const createTask = useCallback(async (module: WorkspaceModule, title: string, description: string, sourceRunId?: string, acceptanceCriteria: string[] = []) => {
     if (!workspace) return
     const response = await fetch(`${apiRoot()}/v1/projects/${workspace.project.id}/tasks`, {
-      method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ module_id: module.id, title, description }),
+      method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ module_id: module.id, title, description, source_run_id: sourceRunId, acceptance_criteria: acceptanceCriteria }),
     })
     if (!response.ok) throw new Error('Could not create task')
     await refresh()

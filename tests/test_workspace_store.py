@@ -58,3 +58,25 @@ async def test_workspace_api_returns_default_registry_and_persists_artifacts(mon
     assert note.status_code == 201
     assert task.status_code == 201
     assert {marker["type"] for marker in final_snapshot.json()["markers"]} == {"note", "task"}
+
+
+@pytest.mark.asyncio
+async def test_workspace_artifacts_preserve_source_run_provenance(tmp_path):
+    run_store = SQLiteRunStore(str(tmp_path / "agent-state.db"))
+    store = get_workspace_store(run_store)
+    project = await store.ensure_default_project()
+    snapshot = await store.snapshot(project.id)
+    assert snapshot is not None
+    module = snapshot.modules[0]
+
+    note = await store.create_note(
+        project.id,
+        NoteCreateRequest(module_id=module.id, title="Run decision", content="Persist the reviewer outcome.", source_run_id="run-123"),
+    )
+    task = await store.create_task(
+        project.id,
+        TaskCreateRequest(module_id=module.id, title="Follow up", source_run_id="run-123"),
+    )
+
+    assert note.source_run_id == "run-123"
+    assert task.source_run_id == "run-123"

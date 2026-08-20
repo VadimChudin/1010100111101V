@@ -1,6 +1,6 @@
 // Dark Mission Control: the chat rail is the operator's narrative view of an active run.
 import { FormEvent, useEffect, useRef, useState } from 'react'
-import { ArrowUp, Check, Circle, Loader2, Radio, RotateCw, Sparkles, Wrench } from 'lucide-react'
+import { ArrowUp, Check, Circle, FilePlus2, ListPlus, Loader2, Radio, RotateCw, Sparkles, Wrench } from 'lucide-react'
 import ApprovalCards from './ApprovalCards'
 import MessageBubble from './MessageBubble'
 import type { AgentEvent, AgentStage, ApprovalGrantScope, ApprovalMode, ApprovalRequest, ChatMessage, PlanStep } from '../types'
@@ -12,12 +12,24 @@ const stageMeta: Array<{ key: AgentStage; label: string; icon: typeof Sparkles }
   { key: 'completed', label: 'Done', icon: Check },
 ]
 
-export default function Chat({ messages, plan, events, approvals, loading, error, stage, connected, runId, onSend, onApprovalDecision, approvalMode, onApprovalModeChange }: { messages: ChatMessage[]; plan: PlanStep[]; events: AgentEvent[]; approvals: ApprovalRequest[]; loading: boolean; error?: string; stage: AgentStage; connected: boolean; runId?: string; onSend: (message: string) => void; onApprovalDecision: (approvalId: string, approved: boolean, grantScope: ApprovalGrantScope) => void; approvalMode: ApprovalMode; onApprovalModeChange: (mode: ApprovalMode) => void }) {
+export default function Chat({ messages, plan, events, approvals, loading, error, stage, connected, runId, moduleTitle, onSend, onApprovalDecision, onCaptureNote, onCaptureTask, approvalMode, onApprovalModeChange }: { messages: ChatMessage[]; plan: PlanStep[]; events: AgentEvent[]; approvals: ApprovalRequest[]; loading: boolean; error?: string; stage: AgentStage; connected: boolean; runId?: string; moduleTitle?: string; onSend: (message: string) => void; onApprovalDecision: (approvalId: string, approved: boolean, grantScope: ApprovalGrantScope) => void; onCaptureNote: (runId: string, title: string, content: string) => Promise<void>; onCaptureTask: (runId: string, title: string, description: string) => Promise<void>; approvalMode: ApprovalMode; onApprovalModeChange: (mode: ApprovalMode) => void }) {
   const [draft, setDraft] = useState('')
+  const [captureState, setCaptureState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const scrollRef = useRef<HTMLDivElement>(null)
   useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }) }, [messages, events])
   const submit = (event: FormEvent) => { event.preventDefault(); if (draft.trim()) { onSend(draft); setDraft('') } }
   const activeIndex = stage === 'idle' ? -1 : stageMeta.findIndex((item) => item.key === stage)
+  const latestAnswer = [...messages].reverse().find((message) => message.role === 'assistant' && message.runId === runId)?.content || 'Run completed. Review the timeline for the full result.'
+  const capture = async (kind: 'note' | 'task') => {
+    if (!runId || loading) return
+    setCaptureState('saving')
+    const title = `Run context: ${plan[0]?.title || 'Agent review'}`
+    try {
+      if (kind === 'note') await onCaptureNote(runId, title, latestAnswer)
+      else await onCaptureTask(runId, `Follow up: ${plan[0]?.title || 'Agent review'}`, latestAnswer)
+      setCaptureState('saved')
+    } catch { setCaptureState('error') }
+  }
 
   return (
     <section className="flex min-h-[620px] flex-1 flex-col overflow-hidden border-r border-white/[0.08] bg-[#0c1117]/90 lg:min-w-[390px] lg:max-w-[540px]">
@@ -35,6 +47,7 @@ export default function Chat({ messages, plan, events, approvals, loading, error
         {messages.map((message) => <MessageBubble key={message.id} message={message} />)}
         {loading && <div className="flex items-center gap-3 text-text-dim"><div className="grid h-8 w-8 place-items-center rounded-[10px] border border-signal-ice/20 bg-signal-ice/10 text-signal-ice"><Loader2 size={15} className="animate-spin" /></div><div className="font-mono text-[11px] uppercase tracking-[0.12em]">Agent is working<span className="typing-dots">...</span></div></div>}
         <ApprovalCards approvals={approvals} onDecision={onApprovalDecision} />
+        {runId && !loading && <section className="border-t border-white/[0.07] pt-5"><div className="flex items-center justify-between gap-3"><div><p className="font-mono text-[10px] uppercase tracking-[0.14em] text-signal-ice">Run to context</p><p className="mt-1 text-xs text-text-muted">Save this outcome to {moduleTitle || 'the selected workspace module'}.</p></div>{captureState === 'saved' && <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-complete">Captured</span>}</div><div className="mt-3 grid grid-cols-2 gap-2"><button type="button" disabled={captureState === 'saving'} onClick={() => void capture('note')} className="inline-flex items-center justify-center gap-2 rounded-lg border border-signal-ice/25 bg-signal-ice/10 px-3 py-2 font-mono text-[10px] uppercase tracking-[0.1em] text-signal-ice disabled:opacity-50"><FilePlus2 size={13} />Save note</button><button type="button" disabled={captureState === 'saving'} onClick={() => void capture('task')} className="inline-flex items-center justify-center gap-2 rounded-lg border border-white/10 px-3 py-2 font-mono text-[10px] uppercase tracking-[0.1em] text-text-muted hover:text-white disabled:opacity-50"><ListPlus size={13} />Create task</button></div>{captureState === 'error' && <p className="mt-2 text-xs text-alert">Could not save the run context. Try again.</p>}</section>}
         {events.length > 0 && <div className="border-t border-white/[0.07] pt-5"><div className="mb-3 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.16em] text-text-dim"><Radio size={12} className="text-signal-ice" /> Event trace</div><div className="space-y-2">{events.slice(-5).map((event, index) => <div key={event.id || index} className="flex gap-3 text-[11px] text-text-muted"><Circle size={7} className="mt-1.5 shrink-0 text-signal-ice" /><span>{event.message || event.content || event.text || 'Agent event received'}</span></div>)}</div></div>}
       </div>
       <div className="border-t border-white/[0.08] bg-[#0a0e13]/70 px-5 py-4 sm:px-7">
