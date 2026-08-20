@@ -53,7 +53,7 @@ class RuntimeUpdater:
         return Path(self.config.state_dir) / "updates"
 
     async def check(self) -> ReleaseManifest | None:
-        async with httpx.AsyncClient(timeout=20, headers={"Accept": "application/vnd.github+json"}) as client:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True, headers={"Accept": "application/vnd.github+json"}) as client:
             release_response = await client.get(self.release_api)
             if release_response.status_code == 404:
                 return None
@@ -73,7 +73,7 @@ class RuntimeUpdater:
     async def stage(self, manifest: ReleaseManifest) -> Path:
         self.updates_dir.mkdir(parents=True, exist_ok=True)
         destination = self.updates_dir / manifest.asset_name
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
             response = await client.get(manifest.asset_url)
             response.raise_for_status()
             payload = response.content
