@@ -66,6 +66,10 @@ class RequestObservabilityMiddleware(BaseHTTPMiddleware):
         duration_ms = int((time.perf_counter() - started) * 1000)
         metrics.record(request.method, request.url.path, response.status_code, duration_ms)
         response.headers["X-Request-ID"] = request_id
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
         logger.info("request_completed request_id=%s method=%s path=%s status=%s duration_ms=%s", request_id, request.method, request.url.path, response.status_code, duration_ms)
         return response
 
