@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import type {
+  DeviceJob,
   GraphitiEpisodeEnvelope,
   ProjectDevice,
   RepositoryFile,
@@ -20,6 +21,7 @@ export function useWorkspace() {
   const [repository, setRepository] = useState<RepositoryIndex>()
   const [files, setFiles] = useState<RepositoryFile[]>([])
   const [devices, setDevices] = useState<ProjectDevice[]>([])
+  const [deviceJobs, setDeviceJobs] = useState<DeviceJob[]>([])
   const [graphitiEpisodes, setGraphitiEpisodes] = useState<GraphitiEpisodeEnvelope[]>([])
   const [pairing, setPairing] = useState<DevicePairing>()
   const [selectedModuleId, setSelectedModuleId] = useState<string>()
@@ -42,12 +44,13 @@ export function useWorkspace() {
         if (!response.ok) throw new Error('Could not refresh the Git project map')
       }
 
-      const [workspaceResponse, repositoryResponse, filesResponse, devicesResponse, episodesResponse] = await Promise.all([
+      const [workspaceResponse, repositoryResponse, filesResponse, devicesResponse, episodesResponse, jobsResponse] = await Promise.all([
         fetch(`${apiRoot()}/v1/projects/${project.id}/workspace`, { credentials: 'include' }),
         fetch(`${apiRoot()}/v1/projects/${project.id}/repository`, { credentials: 'include' }),
         fetch(`${apiRoot()}/v1/projects/${project.id}/files`, { credentials: 'include' }),
         fetch(`${apiRoot()}/v1/projects/${project.id}/devices`, { credentials: 'include' }),
         fetch(`${apiRoot()}/v1/projects/${project.id}/graphiti/episodes`, { credentials: 'include' }),
+        fetch(`${apiRoot()}/v1/projects/${project.id}/devices/jobs`, { credentials: 'include' }),
       ])
       if (!workspaceResponse.ok) throw new Error('Could not load workspace')
       const snapshot = await workspaceResponse.json() as WorkspaceSnapshot
@@ -57,6 +60,7 @@ export function useWorkspace() {
       setFiles(filesResponse.ok ? await filesResponse.json() as RepositoryFile[] : [])
       setDevices(devicesResponse.ok ? await devicesResponse.json() as ProjectDevice[] : [])
       setGraphitiEpisodes(episodesResponse.ok ? await episodesResponse.json() as GraphitiEpisodeEnvelope[] : [])
+      setDeviceJobs(jobsResponse.ok ? await jobsResponse.json() as DeviceJob[] : [])
       setError(undefined)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load workspace')
@@ -81,6 +85,26 @@ export function useWorkspace() {
     setPairing(nextPairing)
     return nextPairing
   }, [workspace])
+
+  const createDeviceJob = useCallback(async (deviceId: string, type: DeviceJob['type'], payload: Record<string, unknown> = {}) => {
+    if (!workspace) throw new Error('Workspace is not ready')
+    const response = await fetch(`${apiRoot()}/v1/projects/${workspace.project.id}/devices/jobs`, {
+      method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device_id: deviceId, type, payload }),
+    })
+    if (!response.ok) throw new Error('Could not create local semantic request')
+    const job = await response.json() as DeviceJob
+    await refresh()
+    return job
+  }, [refresh, workspace])
+
+  const approveDeviceJob = useCallback(async (jobId: string, approved: boolean) => {
+    if (!workspace) throw new Error('Workspace is not ready')
+    const response = await fetch(`${apiRoot()}/v1/projects/${workspace.project.id}/devices/jobs/${jobId}/approval`, {
+      method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ approved }),
+    })
+    if (!response.ok) throw new Error('Could not approve local semantic request')
+    await refresh()
+  }, [refresh, workspace])
 
   const createNote = useCallback(async (module: WorkspaceModule, title: string, content: string, sourceRunId?: string) => {
     if (!workspace) return
@@ -110,7 +134,7 @@ export function useWorkspace() {
   }, [refresh, workspace])
 
   return {
-    workspace, repository, files, devices, graphitiEpisodes, pairing, selectedModule, selectedModuleId, setSelectedModuleId,
-    loading, indexing, error, refresh, indexRepository, createDevicePairing, createNote, createTask, updateTaskStatus,
+    workspace, repository, files, devices, deviceJobs, graphitiEpisodes, pairing, selectedModule, selectedModuleId, setSelectedModuleId,
+    loading, indexing, error, refresh, indexRepository, createDevicePairing, createDeviceJob, approveDeviceJob, createNote, createTask, updateTaskStatus,
   }
 }

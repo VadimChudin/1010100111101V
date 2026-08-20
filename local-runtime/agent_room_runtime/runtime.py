@@ -92,6 +92,7 @@ class LocalRuntime:
         payload = {
             "cursor": self.outbox.cursor(),
             "events": self.outbox.pending(),
+            "job_results": self.outbox.pending_job_results(),
             "inventory": git_inventory(self.config.workspace_root),
         }
         headers = {"X-Device-Token": self.config.device_token}
@@ -103,8 +104,29 @@ class LocalRuntime:
             )
             response.raise_for_status()
             result = response.json()
-        self.outbox.acknowledge(list(result.get("accepted_event_ids", [])), iso_now())
-        self.outbox.apply_server_events(list(result.get("events", [])), int(result["server_cursor"]), iso_now())
+        timestamp = iso_now()
+        self.outbox.acknowledge(list(result.get("accepted_event_ids", [])), timestamp)
+        accepted_job_ids = list(result.get("accepted_job_result_ids", []))
+        rejected_job_ids = [
+            str(conflict.get("event_id"))
+            for conflict in list(result.get("conflicts", []))
+            if str(conflict.get("code", "")).startswith("job_") and conflict.get("event_id")
+        ]
+        self.outbox.acknowledge_job_results(accepted_job_ids + rejected_job_ids, timestamp)
+        self.outbox.apply_server_events(list(result.get("events", [])), int(result["server_cursor"]), timestamp)
+        if result.get("jobs"):
+            from .jobs import DeviceJobExecutor
+
+            executor = DeviceJobExecutor(self)
+            for job in list(result["jobs"]):
+                job_id = str(job["id"])
+                lease_id = str(job["lease_id"])
+                try:
+                    job_result = await executor.execute(job)
+                    submission = {"job_id": job_id, "lease_id": lease_id, "status": "completed", "result": job_result}
+                except (OSError, RuntimeError, ValueError, PermissionError, httpx.HTTPError) as exc:
+                    submission = {"job_id": job_id, "lease_id": lease_id, "status": "failed", "result": {}, "error": str(exc)[:2000]}
+                self.outbox.enqueue_job_result(job_id, lease_id, submission, iso_now())
         return result
 
     async def sync_forever(

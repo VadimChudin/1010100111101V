@@ -230,3 +230,25 @@ export interface GraphitiEpisodeEnvelope {
   source_commit_sha?: string | null
   occurred_at: string
 }
+
+
+export type DeviceJobType = 'find_symbol' | 'find_references' | 'index_workspace' | 'retrieve_project_memory'
+export type DeviceJobStatus = 'pending_approval' | 'queued' | 'leased' | 'completed' | 'failed' | 'expired' | 'cancelled'
+
+export interface DeviceJob {
+  id: string
+  project_id: string
+  device_id: string
+  creator_user_id: string
+  type: DeviceJobType
+  payload: Record<string, unknown>
+  status: DeviceJobStatus
+  expires_at: string
+  approved_at?: string | null
+  approved_by_user_id?: string | null
+  lease_expires_at?: string | null
+  result?: Record<string, unknown> | null
+  error?: string | null
+  created_at: string
+  completed_at?: string | null
+}

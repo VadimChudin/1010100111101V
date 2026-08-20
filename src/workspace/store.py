@@ -16,6 +16,12 @@ from typing import Any
 from src.storage import SQLiteRunStore
 
 from .models import (
+    DeviceJob,
+    DeviceJobCreateRequest,
+    DeviceJobDelivery,
+    DeviceJobResultSubmission,
+    DeviceJobStatus,
+    DeviceJobType,
     DevicePairing,
     DevicePairingRequest,
     DeviceRegistration,
@@ -166,6 +172,25 @@ CREATE TABLE IF NOT EXISTS device_pairings (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS device_jobs (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    device_id TEXT NOT NULL REFERENCES project_devices(id) ON DELETE CASCADE,
+    creator_user_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    approved_at TEXT,
+    approved_by_user_id TEXT,
+    lease_id TEXT,
+    lease_expires_at TEXT,
+    result_json TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    completed_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS project_events (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -199,6 +224,7 @@ CREATE TABLE IF NOT EXISTS graphiti_episode_envelopes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_project_devices_project ON project_devices(project_id, status);
+CREATE INDEX IF NOT EXISTS idx_device_jobs_delivery ON device_jobs(project_id, device_id, status, expires_at, lease_expires_at);
 CREATE INDEX IF NOT EXISTS idx_project_events_project_sequence ON project_events(project_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_device_pairings_token ON device_pairings(token_hash);
 """
@@ -723,6 +749,198 @@ class WorkspaceStore:
             entity_revision=int(row["entity_revision"]), payload=json.loads(row["payload_json"]), occurred_at=row["occurred_at"], created_at=row["created_at"],
         )
 
+    @staticmethod
+    def _validate_device_job_payload(job_type: DeviceJobType, payload: dict[str, Any]) -> dict[str, Any]:
+        def required_text(key: str, maximum: int) -> str:
+            value = payload.get(key)
+            if not isinstance(value, str) or not value.strip() or len(value.strip()) > maximum:
+                raise ValueError(f"{key} must be a non-empty string of at most {maximum} characters")
+            return value.strip()
+
+        def optional_path(key: str = "relative_path") -> str | None:
+            value = payload.get(key)
+            if value is None or value == "":
+                return None
+            if not isinstance(value, str) or len(value) > 1200 or value.startswith(("/", "\\\\")) or ".." in Path(value).parts:
+                raise ValueError(f"{key} must be a project-relative path")
+            return value
+
+        if job_type == DeviceJobType.FIND_SYMBOL:
+            unknown = set(payload).difference({"name_path", "relative_path", "include_body"})
+            if unknown:
+                raise ValueError("find_symbol payload contains unsupported fields")
+            clean = {"name_path": required_text("name_path", 500)}
+            relative_path = optional_path()
+            if relative_path:
+                clean["relative_path"] = relative_path
+            if "include_body" in payload:
+                if not isinstance(payload["include_body"], bool):
+                    raise ValueError("include_body must be boolean")
+                clean["include_body"] = payload["include_body"]
+            return clean
+        if job_type == DeviceJobType.FIND_REFERENCES:
+            unknown = set(payload).difference({"name_path", "relative_path"})
+            if unknown:
+                raise ValueError("find_references payload contains unsupported fields")
+            clean = {"name_path": required_text("name_path", 500)}
+            relative_path = optional_path()
+            if relative_path:
+                clean["relative_path"] = relative_path
+            return clean
+        if job_type == DeviceJobType.INDEX_WORKSPACE:
+            if payload:
+                raise ValueError("index_workspace does not accept payload fields")
+            return {}
+        if job_type == DeviceJobType.RETRIEVE_PROJECT_MEMORY:
+            unknown = set(payload).difference({"query", "limit"})
+            if unknown:
+                raise ValueError("retrieve_project_memory payload contains unsupported fields")
+            limit = payload.get("limit", 8)
+            if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 20:
+                raise ValueError("limit must be an integer from 1 to 20")
+            return {"query": required_text("query", 2000), "limit": limit}
+        raise ValueError("Unsupported device job type")
+
+    @staticmethod
+    def _job(row: sqlite3.Row) -> DeviceJob:
+        payload = json.loads(row["payload_json"])
+        result = json.loads(row["result_json"]) if row["result_json"] else None
+        return DeviceJob(
+            id=row["id"], project_id=row["project_id"], device_id=row["device_id"], creator_user_id=row["creator_user_id"],
+            type=DeviceJobType(row["type"]), payload=payload, status=DeviceJobStatus(row["status"]), expires_at=row["expires_at"],
+            approved_at=row["approved_at"], approved_by_user_id=row["approved_by_user_id"], lease_expires_at=row["lease_expires_at"],
+            result=result, error=row["error"], created_at=row["created_at"], completed_at=row["completed_at"],
+        )
+
+    @staticmethod
+    def _delivery(row: sqlite3.Row) -> DeviceJobDelivery:
+        if not row["lease_id"] or not row["lease_expires_at"]:
+            raise ValueError("Device job lease is missing")
+        return DeviceJobDelivery(
+            id=row["id"], project_id=row["project_id"], device_id=row["device_id"], type=DeviceJobType(row["type"]),
+            payload=json.loads(row["payload_json"]), expires_at=row["expires_at"], lease_id=row["lease_id"], lease_expires_at=row["lease_expires_at"],
+        )
+
+    @staticmethod
+    def _expire_and_recover_device_jobs(connection: sqlite3.Connection, timestamp: str) -> None:
+        connection.execute(
+            "UPDATE device_jobs SET status = ?, lease_id = NULL, lease_expires_at = NULL WHERE status = ? AND lease_expires_at <= ? AND expires_at > ?",
+            (DeviceJobStatus.QUEUED, DeviceJobStatus.LEASED, timestamp, timestamp),
+        )
+        connection.execute(
+            "UPDATE device_jobs SET status = ?, lease_id = NULL, lease_expires_at = NULL WHERE status IN (?, ?, ?) AND expires_at <= ?",
+            (DeviceJobStatus.EXPIRED, DeviceJobStatus.PENDING_APPROVAL, DeviceJobStatus.QUEUED, DeviceJobStatus.LEASED, timestamp),
+        )
+
+    def _create_device_job_sync(self, project_id: str, creator_user_id: str, request: DeviceJobCreateRequest) -> DeviceJob:
+        timestamp = now()
+        payload = self._validate_device_job_payload(request.type, request.payload)
+        expires_at = (datetime.now(UTC) + timedelta(seconds=request.expires_in_seconds)).isoformat()
+        job_id = new_id()
+        with self._connect() as connection:
+            self._expire_and_recover_device_jobs(connection, timestamp)
+            device = connection.execute("SELECT * FROM project_devices WHERE id = ? AND project_id = ?", (request.device_id, project_id)).fetchone()
+            if device is None or device["status"] == DeviceStatus.REVOKED:
+                raise LookupError("Registered project device was not found")
+            connection.execute(
+                "INSERT INTO device_jobs (id, project_id, device_id, creator_user_id, type, payload_json, status, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (job_id, project_id, request.device_id, creator_user_id, request.type, json.dumps(payload), DeviceJobStatus.PENDING_APPROVAL, expires_at, timestamp),
+            )
+            row = connection.execute("SELECT * FROM device_jobs WHERE id = ?", (job_id,)).fetchone()
+        return self._job(row)
+
+    async def create_device_job(self, project_id: str, creator_user_id: str, request: DeviceJobCreateRequest) -> DeviceJob:
+        await self.initialize()
+        return await asyncio.to_thread(self._create_device_job_sync, project_id, creator_user_id, request)
+
+    def _approve_device_job_sync(self, project_id: str, job_id: str, approver_user_id: str, approved: bool) -> DeviceJob | None:
+        timestamp = now()
+        next_status = DeviceJobStatus.QUEUED if approved else DeviceJobStatus.CANCELLED
+        with self._connect() as connection:
+            self._expire_and_recover_device_jobs(connection, timestamp)
+            updated = connection.execute(
+                "UPDATE device_jobs SET status = ?, approved_at = ?, approved_by_user_id = ? WHERE id = ? AND project_id = ? AND status = ?",
+                (next_status, timestamp, approver_user_id, job_id, project_id, DeviceJobStatus.PENDING_APPROVAL),
+            )
+            if updated.rowcount != 1:
+                return None
+            row = connection.execute("SELECT * FROM device_jobs WHERE id = ?", (job_id,)).fetchone()
+        return self._job(row)
+
+    async def approve_device_job(self, project_id: str, job_id: str, approver_user_id: str, approved: bool) -> DeviceJob | None:
+        await self.initialize()
+        return await asyncio.to_thread(self._approve_device_job_sync, project_id, job_id, approver_user_id, approved)
+
+    def _list_device_jobs_sync(self, project_id: str, device_id: str | None = None, limit: int = 100) -> list[DeviceJob]:
+        timestamp = now()
+        with self._connect() as connection:
+            self._expire_and_recover_device_jobs(connection, timestamp)
+            if device_id:
+                rows = connection.execute("SELECT * FROM device_jobs WHERE project_id = ? AND device_id = ? ORDER BY created_at DESC LIMIT ?", (project_id, device_id, limit)).fetchall()
+            else:
+                rows = connection.execute("SELECT * FROM device_jobs WHERE project_id = ? ORDER BY created_at DESC LIMIT ?", (project_id, limit)).fetchall()
+        return [self._job(row) for row in rows]
+
+    async def list_device_jobs(self, project_id: str, device_id: str | None = None, limit: int = 100) -> list[DeviceJob]:
+        await self.initialize()
+        return await asyncio.to_thread(self._list_device_jobs_sync, project_id, device_id, min(max(limit, 1), 100))
+
+    def _claim_device_jobs_sync(self, project_id: str, device_id: str, limit: int = 5) -> list[DeviceJobDelivery]:
+        timestamp = now()
+        lease_expires_at = (datetime.now(UTC) + timedelta(seconds=90)).isoformat()
+        deliveries: list[DeviceJobDelivery] = []
+        with self._connect() as connection:
+            self._expire_and_recover_device_jobs(connection, timestamp)
+            rows = connection.execute(
+                "SELECT * FROM device_jobs WHERE project_id = ? AND device_id = ? AND status = ? AND expires_at > ? ORDER BY created_at LIMIT ?",
+                (project_id, device_id, DeviceJobStatus.QUEUED, timestamp, limit),
+            ).fetchall()
+            for row in rows:
+                job_expiry = datetime.fromisoformat(str(row["expires_at"]).replace("Z", "+00:00"))
+                expiry = min(job_expiry, datetime.now(UTC) + timedelta(seconds=90)).isoformat()
+                lease_id = secrets.token_urlsafe(24)
+                updated = connection.execute(
+                    "UPDATE device_jobs SET status = ?, lease_id = ?, lease_expires_at = ? WHERE id = ? AND status = ?",
+                    (DeviceJobStatus.LEASED, lease_id, expiry, row["id"], DeviceJobStatus.QUEUED),
+                )
+                if updated.rowcount == 1:
+                    leased = connection.execute("SELECT * FROM device_jobs WHERE id = ?", (row["id"],)).fetchone()
+                    deliveries.append(self._delivery(leased))
+        return deliveries
+
+    async def claim_device_jobs(self, project_id: str, device_id: str, limit: int = 5) -> list[DeviceJobDelivery]:
+        await self.initialize()
+        return await asyncio.to_thread(self._claim_device_jobs_sync, project_id, device_id, min(max(limit, 1), 10))
+
+    def _complete_device_job_results_sync(self, project_id: str, device_id: str, results: list[DeviceJobResultSubmission]) -> tuple[list[str], list[SyncConflict]]:
+        timestamp = now()
+        accepted: list[str] = []
+        conflicts: list[SyncConflict] = []
+        with self._connect() as connection:
+            self._expire_and_recover_device_jobs(connection, timestamp)
+            for submission in results:
+                serialized = json.dumps(submission.result, ensure_ascii=False)
+                if len(serialized) > 24000:
+                    conflicts.append(SyncConflict(event_id=submission.job_id, code="job_result_too_large", detail="Device job result exceeds 24000 characters", entity_id=submission.job_id))
+                    continue
+                row = connection.execute("SELECT * FROM device_jobs WHERE id = ? AND project_id = ? AND device_id = ?", (submission.job_id, project_id, device_id)).fetchone()
+                if row is None or row["status"] != DeviceJobStatus.LEASED or row["lease_id"] != submission.lease_id or not row["lease_expires_at"] or row["lease_expires_at"] <= timestamp:
+                    conflicts.append(SyncConflict(event_id=submission.job_id, code="job_lease_invalid", detail="The job lease is invalid, expired, or bound to another device", entity_id=submission.job_id))
+                    continue
+                if submission.status not in {DeviceJobStatus.COMPLETED, DeviceJobStatus.FAILED}:
+                    conflicts.append(SyncConflict(event_id=submission.job_id, code="job_result_rejected", detail="Only completed or failed job results are accepted", entity_id=submission.job_id))
+                    continue
+                connection.execute(
+                    "UPDATE device_jobs SET status = ?, result_json = ?, error = ?, completed_at = ?, lease_id = NULL, lease_expires_at = NULL WHERE id = ?",
+                    (submission.status, serialized, submission.error, timestamp, submission.job_id),
+                )
+                accepted.append(submission.job_id)
+        return accepted, conflicts
+
+    async def complete_device_job_results(self, project_id: str, device_id: str, results: list[DeviceJobResultSubmission]) -> tuple[list[str], list[SyncConflict]]:
+        await self.initialize()
+        return await asyncio.to_thread(self._complete_device_job_results_sync, project_id, device_id, results)
+
     def _create_device_pairing_sync(self, project_id: str, owner_user_id: str, request: DevicePairingRequest) -> DevicePairing:
         timestamp = now()
         token = secrets.token_urlsafe(32)
@@ -842,7 +1060,7 @@ class WorkspaceStore:
     def _sync_device_sync(self, project_id: str, device_id: str, request: DeviceSyncRequest) -> DeviceSyncResponse:
         timestamp = now()
         accepted: list[str] = []
-        conflicts: list[SyncConflict] = []
+        accepted_job_results, conflicts = self._complete_device_job_results_sync(project_id, device_id, request.job_results)
         with self._connect() as connection:
             device = connection.execute("SELECT * FROM project_devices WHERE id = ? AND project_id = ?", (device_id, project_id)).fetchone()
             if device is None or device["status"] == DeviceStatus.REVOKED:
@@ -881,7 +1099,8 @@ class WorkspaceStore:
             server_cursor = int(cursor_row["cursor"])
             connection.execute("UPDATE project_devices SET last_synced_at = ? WHERE id = ?", (timestamp, device_id))
             updated_device = connection.execute("SELECT * FROM project_devices WHERE id = ?", (device_id,)).fetchone()
-        return DeviceSyncResponse(accepted_event_ids=accepted, conflicts=conflicts, events=[self._event(row) for row in events], server_cursor=server_cursor, device=self._device(updated_device))
+        jobs = self._claim_device_jobs_sync(project_id, device_id)
+        return DeviceSyncResponse(accepted_event_ids=accepted, accepted_job_result_ids=accepted_job_results, conflicts=conflicts, events=[self._event(row) for row in events], jobs=jobs, server_cursor=server_cursor, device=self._device(updated_device))
 
     async def sync_device(self, project_id: str, device_id: str, request: DeviceSyncRequest) -> DeviceSyncResponse:
         await self.initialize()

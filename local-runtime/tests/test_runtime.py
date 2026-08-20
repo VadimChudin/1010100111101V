@@ -98,3 +98,44 @@ def test_verified_apply_preserves_pairing_and_records_release(monkeypatch, tmp_p
     assert config.device_id == "paired-device"
     assert config.device_token == "opaque-device-token"
     assert config.config_path.is_file()
+
+
+def test_outbox_persists_job_results_until_cloud_acknowledgement(tmp_path):
+    outbox = LocalOutbox(tmp_path / "runtime.db")
+    outbox.initialize()
+    payload = {"job_id": "job-1", "lease_id": "lease-1234567890123456", "status": "completed", "result": {"symbols": []}}
+    outbox.enqueue_job_result("job-1", "lease-1234567890123456", payload, "2026-08-20T12:00:00+00:00")
+    outbox.enqueue_job_result("job-1", "lease-1234567890123456", {"status": "failed"}, "2026-08-20T12:01:00+00:00")
+    assert outbox.pending_job_results() == [payload]
+    outbox.acknowledge_job_results(["job-1"], "2026-08-20T12:02:00+00:00")
+    assert outbox.pending_job_results() == []
+
+
+@pytest.mark.asyncio
+async def test_device_job_executor_uses_only_matching_typed_read_only_serena_job(tmp_path):
+    from agent_room_runtime.config import RuntimeConfig
+    from agent_room_runtime.jobs import DeviceJobExecutor
+    from agent_room_runtime.runtime import LocalRuntime
+
+    class FakeSerena:
+        async def call(self, tool_name, arguments):
+            assert tool_name == "find_symbol"
+            assert arguments == {"name_path": "health", "relative_path": "src/api/routes.py"}
+            return {"content": [{"type": "text", "text": "symbol result"}]}
+
+    config = RuntimeConfig(
+        cloud_url="https://cloud.example", project_id="project-1", workspace_root=str(tmp_path), state_dir=str(tmp_path / "state"),
+        device_id="device-1", device_token="opaque-device-token",
+    )
+    executor = DeviceJobExecutor(LocalRuntime(config), serena=FakeSerena())
+    result = await executor.execute(
+        {
+            "id": "job-1", "project_id": "project-1", "device_id": "device-1", "type": "find_symbol",
+            "payload": {"name_path": "health", "relative_path": "src/api/routes.py"}, "lease_id": "lease-1234567890123456",
+        }
+    )
+    assert result["tool"] == "find_symbol"
+    with pytest.raises(PermissionError):
+        await executor.execute({"project_id": "other-project", "device_id": "device-1", "type": "find_symbol", "payload": {}})
+    with pytest.raises(PermissionError):
+        await executor.execute({"project_id": "project-1", "device_id": "device-1", "type": "execute_shell", "payload": {}})

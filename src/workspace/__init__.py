@@ -1,4 +1,11 @@
 from .models import (
+    DeviceJob,
+    DeviceJobApprovalRequest,
+    DeviceJobCreateRequest,
+    DeviceJobDelivery,
+    DeviceJobResultSubmission,
+    DeviceJobStatus,
+    DeviceJobType,
     DevicePairing,
     DevicePairingRequest,
     DeviceRegistration,
@@ -33,6 +40,13 @@ from .models import (
 from .store import WorkspaceStore, get_workspace_store
 
 __all__ = [
+    "DeviceJob",
+    "DeviceJobApprovalRequest",
+    "DeviceJobCreateRequest",
+    "DeviceJobDelivery",
+    "DeviceJobResultSubmission",
+    "DeviceJobStatus",
+    "DeviceJobType",
     "DevicePairing",
     "DevicePairingRequest",
     "DeviceRegistration",

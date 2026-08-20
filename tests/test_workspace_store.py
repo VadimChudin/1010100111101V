@@ -7,6 +7,10 @@ import pytest
 
 from src.storage.run_store import SQLiteRunStore
 from src.workspace import (
+    DeviceJobCreateRequest,
+    DeviceJobResultSubmission,
+    DeviceJobStatus,
+    DeviceJobType,
     DevicePairingRequest,
     DeviceRegistrationRequest,
     DeviceSyncRequest,
@@ -216,6 +220,70 @@ async def test_device_pairing_outbox_sync_and_cloud_catch_up(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_device_jobs_require_approval_then_deliver_over_device_sync(tmp_path):
+    repository = create_repository(tmp_path / "repository")
+    run_store = SQLiteRunStore(str(tmp_path / "device-jobs-state.db"))
+    store = get_workspace_store(run_store)
+    project = await store.ensure_default_project()
+    await store.index_repository(project.id, repository)
+    pairing = await store.create_device_pairing(project.id, "owner-1", DevicePairingRequest(name_hint="Semantic laptop"))
+    registration = await store.register_device(
+        project.id,
+        DeviceRegistrationRequest(
+            pairing_token=pairing.pairing_token,
+            name="Semantic laptop",
+            public_key="semantic-local-public-key-material",
+            capabilities=["serena.read_only", "graphiti.local"],
+            inventory=LocalRepositoryInventory(branch="main", commit_sha="c" * 40, tracked_files=5),
+        ),
+    )
+
+    job = await store.create_device_job(
+        project.id,
+        "editor-1",
+        DeviceJobCreateRequest(device_id=registration.id, type=DeviceJobType.FIND_SYMBOL, payload={"name_path": "health", "relative_path": "src/api/routes.py"}),
+    )
+    assert job.status == DeviceJobStatus.PENDING_APPROVAL
+    assert (await store.sync_device(project.id, registration.id, DeviceSyncRequest())).jobs == []
+
+    approved = await store.approve_device_job(project.id, job.id, "owner-1", approved=True)
+    assert approved is not None and approved.status == DeviceJobStatus.QUEUED
+    delivery_sync = await store.sync_device(project.id, registration.id, DeviceSyncRequest())
+    assert len(delivery_sync.jobs) == 1
+    delivery = delivery_sync.jobs[0]
+    assert delivery.id == job.id
+    assert delivery.type == DeviceJobType.FIND_SYMBOL
+    assert delivery.payload == {"name_path": "health", "relative_path": "src/api/routes.py"}
+
+    result_sync = await store.sync_device(
+        project.id,
+        registration.id,
+        DeviceSyncRequest(
+            job_results=[
+                DeviceJobResultSubmission(
+                    job_id=job.id,
+                    lease_id=delivery.lease_id,
+                    status=DeviceJobStatus.COMPLETED,
+                    result={"symbols": [{"name_path": "health", "kind": "function"}]},
+                )
+            ]
+        ),
+    )
+    assert result_sync.accepted_job_result_ids == [job.id]
+    completed = (await store.list_device_jobs(project.id))[0]
+    assert completed.status == DeviceJobStatus.COMPLETED
+    assert completed.result == {"symbols": [{"name_path": "health", "kind": "function"}]}
+
+    replay = await store.sync_device(
+        project.id,
+        registration.id,
+        DeviceSyncRequest(job_results=[DeviceJobResultSubmission(job_id=job.id, lease_id=delivery.lease_id, status=DeviceJobStatus.COMPLETED)]),
+    )
+    assert replay.accepted_job_result_ids == []
+    assert replay.conflicts[0].code == "job_lease_invalid"
+
+
+@pytest.mark.asyncio
 async def test_device_pairing_and_sync_api(monkeypatch, tmp_path):
     from httpx import ASGITransport, AsyncClient
 
@@ -280,3 +348,49 @@ async def test_device_pairing_and_sync_api(monkeypatch, tmp_path):
     assert devices.json()[0]["status"] == "online"
     assert denied.status_code == 401
     assert "device_token" not in devices.json()[0]
+
+
+@pytest.mark.asyncio
+async def test_device_job_api_requires_explicit_approval_before_sync_delivery(monkeypatch, tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from src.api import routes
+    from src.config import Settings
+    from src.main import app
+
+    repository = create_repository(tmp_path / "repository")
+    run_store = SQLiteRunStore(str(tmp_path / "device-job-api-state.db"))
+    monkeypatch.setattr(routes, "get_run_store", lambda: run_store)
+    monkeypatch.setattr(routes, "get_settings", lambda: Settings(workspace_root=str(repository)))
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        projects = await client.get("/v1/projects")
+        project_id = projects.json()[0]["id"]
+        pairing = await client.post(f"/v1/projects/{project_id}/devices/pair", json={"name_hint": "Relay laptop"})
+        registration = await client.post(
+            f"/v1/projects/{project_id}/devices/register",
+            json={
+                "pairing_token": pairing.json()["pairing_token"], "name": "Relay laptop", "public_key": "relay-local-public-key-material",
+                "capabilities": ["serena.read_only", "graphiti.local"], "inventory": {"branch": "main", "commit_sha": "d" * 40, "dirty": False, "tracked_files": 5},
+            },
+        )
+        device = registration.json()
+        created = await client.post(
+            f"/v1/projects/{project_id}/devices/jobs",
+            json={"device_id": device["id"], "type": "index_workspace", "payload": {}},
+        )
+        job = created.json()
+        before_approval = await client.post(
+            f"/v1/projects/{project_id}/devices/{device['id']}/sync", headers={"X-Device-Token": device["device_token"]}, json={"cursor": 0, "events": []},
+        )
+        approved = await client.post(f"/v1/projects/{project_id}/devices/jobs/{job['id']}/approval", json={"approved": True})
+        delivered = await client.post(
+            f"/v1/projects/{project_id}/devices/{device['id']}/sync", headers={"X-Device-Token": device["device_token"]}, json={"cursor": 0, "events": []},
+        )
+
+    assert created.status_code == 201
+    assert job["status"] == "pending_approval"
+    assert before_approval.status_code == 200 and before_approval.json()["jobs"] == []
+    assert approved.status_code == 200 and approved.json()["status"] == "queued"
+    assert delivered.status_code == 200 and delivered.json()["jobs"][0]["id"] == job["id"]
+    assert "lease_id" in delivered.json()["jobs"][0]

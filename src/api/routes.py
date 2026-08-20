@@ -25,6 +25,9 @@ from src.storage import get_run_store
 from src.tools.gateway import ToolGateway
 from src.tools.serena import SerenaClient
 from src.workspace import (
+    DeviceJob,
+    DeviceJobApprovalRequest,
+    DeviceJobCreateRequest,
     DevicePairing,
     DevicePairingRequest,
     DeviceRegistration,
@@ -305,6 +308,32 @@ async def register_project_device(project_id: str, payload: DeviceRegistrationRe
 async def get_project_devices(project_id: str, request: Request):
     await require_project_access(request, project_id)
     return await workspace_store().list_devices(project_id)
+
+
+@router.get("/projects/{project_id}/devices/jobs", response_model=list[DeviceJob])
+async def get_project_device_jobs(project_id: str, request: Request, device_id: str | None = None, limit: int = 50):
+    await require_project_access(request, project_id)
+    return await workspace_store().list_device_jobs(project_id, device_id=device_id, limit=min(max(limit, 1), 100))
+
+
+@router.post("/projects/{project_id}/devices/jobs", response_model=DeviceJob, status_code=201)
+async def create_project_device_job(project_id: str, payload: DeviceJobCreateRequest, request: Request):
+    user = await require_project_access(request, project_id, ProjectRole.EDITOR)
+    try:
+        return await workspace_store().create_device_job(project_id, user.id, payload)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/projects/{project_id}/devices/jobs/{job_id}/approval", response_model=DeviceJob)
+async def approve_project_device_job(project_id: str, job_id: str, payload: DeviceJobApprovalRequest, request: Request):
+    user = await require_project_access(request, project_id, ProjectRole.OWNER)
+    job = await workspace_store().approve_device_job(project_id, job_id, user.id, payload.approved)
+    if job is None:
+        raise HTTPException(status_code=409, detail="Device job cannot be approved in its current state")
+    return job
 
 
 async def require_registered_device(project_id: str, device_id: str, device_token: str) -> ProjectDevice:

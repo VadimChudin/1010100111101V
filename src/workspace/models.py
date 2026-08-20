@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -30,6 +30,23 @@ class DeviceStatus(StrEnum):
     ONLINE = "online"
     OFFLINE = "offline"
     REVOKED = "revoked"
+
+
+class DeviceJobType(StrEnum):
+    FIND_SYMBOL = "find_symbol"
+    FIND_REFERENCES = "find_references"
+    INDEX_WORKSPACE = "index_workspace"
+    RETRIEVE_PROJECT_MEMORY = "retrieve_project_memory"
+
+
+class DeviceJobStatus(StrEnum):
+    PENDING_APPROVAL = "pending_approval"
+    QUEUED = "queued"
+    LEASED = "leased"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    EXPIRED = "expired"
+    CANCELLED = "cancelled"
 
 
 class ProjectRuntimeMode(StrEnum):
@@ -209,6 +226,54 @@ class DeviceRegistration(ProjectDevice):
     device_token: str
 
 
+class DeviceJobCreateRequest(BaseModel):
+    device_id: str = Field(min_length=8, max_length=120)
+    type: DeviceJobType
+    payload: dict[str, Any] = Field(default_factory=dict, max_length=20)
+    expires_in_seconds: int = Field(default=600, ge=60, le=3600)
+
+
+class DeviceJobApprovalRequest(BaseModel):
+    approved: bool
+
+
+class DeviceJobResultSubmission(BaseModel):
+    job_id: str = Field(min_length=8, max_length=120)
+    lease_id: str = Field(min_length=16, max_length=160)
+    status: Literal[DeviceJobStatus.COMPLETED, DeviceJobStatus.FAILED]
+    result: dict[str, Any] = Field(default_factory=dict, max_length=40)
+    error: str | None = Field(default=None, max_length=2000)
+
+
+class DeviceJob(BaseModel):
+    id: str
+    project_id: str
+    device_id: str
+    creator_user_id: str
+    type: DeviceJobType
+    payload: dict[str, Any] = Field(default_factory=dict)
+    status: DeviceJobStatus
+    expires_at: str
+    approved_at: str | None = None
+    approved_by_user_id: str | None = None
+    lease_expires_at: str | None = None
+    result: dict[str, Any] | None = None
+    error: str | None = None
+    created_at: str
+    completed_at: str | None = None
+
+
+class DeviceJobDelivery(BaseModel):
+    id: str
+    project_id: str
+    device_id: str
+    type: DeviceJobType
+    payload: dict[str, Any] = Field(default_factory=dict)
+    expires_at: str
+    lease_id: str = Field(min_length=16, max_length=160)
+    lease_expires_at: str
+
+
 class ProjectEventMutation(BaseModel):
     event_id: str = Field(min_length=8, max_length=120)
     type: ProjectEventType
@@ -244,13 +309,16 @@ class SyncConflict(BaseModel):
 class DeviceSyncRequest(BaseModel):
     cursor: int = Field(default=0, ge=0)
     events: list[ProjectEventMutation] = Field(default_factory=list, max_length=100)
+    job_results: list[DeviceJobResultSubmission] = Field(default_factory=list, max_length=20)
     inventory: LocalRepositoryInventory | None = None
 
 
 class DeviceSyncResponse(BaseModel):
     accepted_event_ids: list[str] = Field(default_factory=list)
+    accepted_job_result_ids: list[str] = Field(default_factory=list)
     conflicts: list[SyncConflict] = Field(default_factory=list)
     events: list[ProjectEvent] = Field(default_factory=list)
+    jobs: list[DeviceJobDelivery] = Field(default_factory=list)
     server_cursor: int = Field(ge=0)
     device: ProjectDevice
 
