@@ -36,6 +36,16 @@ test('desktop GitHub clone flow validates server source and uses an ephemeral as
   assert.match(main, /rm\(askpass\.directory/)
 })
 
+test('repository access recovery guides a legacy desktop authorization through one-time reconnect and automatic reload', async () => {
+  const renderer = await source('renderer/app.mjs')
+  const markup = await source('renderer/index.html')
+  assert.match(markup, /Reconnect GitHub and load repositories/)
+  assert.match(renderer, /refreshRepositoriesAfterAuthorization/)
+  assert.match(renderer, /GitHub request failed \(409\)/)
+  assert.match(renderer, /await loadGitHubRepositories\(\)/)
+  assert.match(renderer, /startAuthorization\(\{ refreshRepositories: true \}\)/)
+})
+
 test('desktop component commands retain local-only Serena boundary and verified runtime bootstrap', async () => {
   const main = await source('main.mjs')
   assert.match(main, /installerPath\(\)/)

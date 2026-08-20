@@ -37,6 +37,7 @@ let selectedCloneDestination = ''
 let repositories = []
 let sourceMode = 'local'
 let authorizationPoll = null
+let refreshRepositoriesAfterAuthorization = false
 
 function showPanel(name) {
   Object.entries(panels).forEach(([key, panel]) => panel.classList.toggle('hidden', key !== name))
@@ -53,7 +54,7 @@ function setSetupNote(text) {
   setupNote.textContent = text
 }
 
-function setSourceMode(mode) {
+function setSourceMode(mode, loadRepositories = true) {
   sourceMode = mode
   const local = mode === 'local'
   localSourceButton.classList.toggle('active', local)
@@ -63,7 +64,7 @@ function setSourceMode(mode) {
   sourceNote.textContent = local
     ? 'Select a local Git project to prepare this computer.'
     : 'Choose a repository, then select an empty local destination for its clone.'
-  if (!local && repositories.length === 0) loadGitHubRepositories()
+  if (!local && loadRepositories && repositories.length === 0) loadGitHubRepositories()
 }
 
 function continueToSetup(workspace, sourceDetail) {
@@ -126,7 +127,10 @@ async function loadGitHubRepositories() {
     selectedRepository = null
     renderRepositories()
     updateCloneAction()
-    githubSourceNote.textContent = `${error.message} Reconnect GitHub if this desktop authorization was granted before repository access was enabled.`
+    const message = String(error?.message || '')
+    githubSourceNote.textContent = message.includes('GitHub request failed (409)')
+      ? 'Repository access needs a one-time GitHub refresh. Select “Reconnect GitHub” below, approve access in the browser, then this list will reload automatically.'
+      : 'Repository list could not be loaded. Select “Reconnect GitHub” below to renew access, then try again.'
   } finally {
     refreshRepositoriesButton.disabled = false
   }
@@ -152,8 +156,10 @@ async function restoreState() {
   }
 }
 
-async function startAuthorization() {
+async function startAuthorization({ refreshRepositories = false } = {}) {
+  refreshRepositoriesAfterAuthorization = refreshRepositories
   connectButton.disabled = true
+  reconnectGitHubButton.disabled = true
   try {
     const authorization = await window.agentRoom.beginAuthorization()
     authExpiry.textContent = `Approval expires at ${new Date(authorization.expiresAt).toLocaleTimeString()}.`
@@ -161,6 +167,7 @@ async function startAuthorization() {
     authorizationPoll = window.setInterval(pollAuthorization, 1800)
   } catch (error) {
     connectButton.disabled = false
+    reconnectGitHubButton.disabled = false
     window.alert(`Could not start browser authorization: ${error.message}`)
   }
 }
@@ -174,12 +181,22 @@ async function pollAuthorization() {
       const connected = await window.agentRoom.claimAuthorization()
       showPanel('source')
       sourceNote.textContent = `Connected as ${connected.user.login}. Choose the project source for this computer.`
+      if (refreshRepositoriesAfterAuthorization) {
+        refreshRepositoriesAfterAuthorization = false
+        repositories = []
+        selectedRepository = null
+        setSourceMode('github', false)
+        githubSourceNote.textContent = 'GitHub access refreshed. Loading repositories…'
+        await loadGitHubRepositories()
+      }
+      reconnectGitHubButton.disabled = false
       return
     }
     if (result.status === 'expired') {
       window.clearInterval(authorizationPoll)
       authorizationPoll = null
       connectButton.disabled = false
+      reconnectGitHubButton.disabled = false
       showPanel('intro')
       window.alert('Browser authorization expired. Please try again.')
     }
@@ -271,7 +288,7 @@ chooseWorkspaceButton.addEventListener('click', chooseWorkspace)
 refreshRepositoriesButton.addEventListener('click', loadGitHubRepositories)
 chooseCloneDestinationButton.addEventListener('click', chooseCloneDestination)
 cloneRepositoryButton.addEventListener('click', cloneSelectedRepository)
-reconnectGitHubButton.addEventListener('click', startAuthorization)
+reconnectGitHubButton.addEventListener('click', () => startAuthorization({ refreshRepositories: true }))
 installButton.addEventListener('click', installAndPair)
 openWorkspaceButton.addEventListener('click', () => window.agentRoom.openWorkspace())
 diagnosticsButton.addEventListener('click', async () => window.agentRoom.openDiagnostics())
