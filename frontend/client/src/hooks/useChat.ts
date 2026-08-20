@@ -1,6 +1,6 @@
 // Dark Mission Control: chat state translates durable agent runs into a readable operator narrative.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AgentEvent, AgentPlan, AgentStage, ApprovalMode, ChatMessage, ChatResponse, PlanStep, RunSubmission } from '../types'
+import type { AgentEvent, AgentPlan, AgentStage, ApprovalGrantScope, ApprovalMode, ApprovalRequest, ChatMessage, ChatResponse, PlanStep, RunSubmission } from '../types'
 
 const initialMessage: ChatMessage = {
   id: 'intro',
@@ -36,6 +36,9 @@ const eventMessage = (event: AgentEvent): string => {
   if (event.type === 'run.created') return 'Run policy recorded.'
   if (event.type === 'run.started') return 'Run started.'
   if (event.type === 'tool.result') return 'Tool execution stage completed.'
+  if (event.type === 'approval.requested') return `Approval required for ${typeof payload.tool === 'string' ? payload.tool : 'a protected action'}.`
+  if (event.type === 'approval.granted') return 'Approval granted and the authorised action is executing.'
+  if (event.type === 'approval.denied') return 'Approval denied. The protected action was not executed.'
   if (event.type === 'review.updated') return typeof payload.comment === 'string' ? payload.comment : 'Review completed.'
   if (event.type === 'run.completed') return 'Run completed.'
   if (event.type === 'run.failed') return 'Run failed.'
@@ -58,6 +61,7 @@ export function useChat() {
   const [plan, setPlan] = useState<PlanStep[]>([])
   const [events, setEvents] = useState<AgentEvent[]>([])
   const [runId, setRunId] = useState<string>()
+  const [approvals, setApprovals] = useState<ApprovalRequest[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>()
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('confirm_each')
@@ -72,6 +76,18 @@ export function useChat() {
   }, [])
 
   useEffect(() => () => closeStream(), [closeStream])
+
+  const refreshApprovals = useCallback(async (targetRunId?: string) => {
+    if (!targetRunId) return
+    try {
+      const response = await fetch(`${apiUrl.replace(/\/$/, '')}/v1/runs/${targetRunId}/approvals?status=pending`, { credentials: 'include' })
+      if (!response.ok) throw new Error(`Approval request failed with ${response.status}`)
+      const data = await response.json() as { approvals?: ApprovalRequest[] }
+      setApprovals(Array.isArray(data.approvals) ? data.approvals : [])
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load pending approvals.')
+    }
+  }, [apiUrl])
 
   const appendEvent = useCallback((rawEvent: AgentEvent) => {
     const event = normalizeTimelineEvent(rawEvent)
@@ -88,6 +104,7 @@ export function useChat() {
     if (event.type === 'run.completed') {
       terminalRef.current = true
       setLoading(false)
+      setApprovals([])
       closeStream()
       const review = payload.review as Record<string, unknown> | undefined
       const answer = typeof review?.comment === 'string' ? review.comment : 'Run completed. Review the timeline for details.'
@@ -96,10 +113,35 @@ export function useChat() {
     if (event.type === 'run.failed') {
       terminalRef.current = true
       setLoading(false)
+      setApprovals([])
       closeStream()
       setError(typeof payload.message === 'string' ? payload.message : 'The agent run failed.')
     }
   }, [closeStream, runId])
+
+  useEffect(() => {
+    if (!runId || !loading) return
+    void refreshApprovals(runId)
+    const interval = window.setInterval(() => void refreshApprovals(runId), 2000)
+    return () => window.clearInterval(interval)
+  }, [loading, refreshApprovals, runId])
+
+  const decideApproval = useCallback(async (approvalId: string, approved: boolean, grantScope: ApprovalGrantScope) => {
+    if (!runId) return
+    setError(undefined)
+    try {
+      const response = await fetch(`${apiUrl.replace(/\/$/, '')}/v1/runs/${runId}/approvals/${approvalId}/decision`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ approved, grant_scope: grantScope }),
+      })
+      if (!response.ok) throw new Error(`Approval decision failed with ${response.status}`)
+      await refreshApprovals(runId)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not submit the approval decision.')
+    }
+  }, [apiUrl, refreshApprovals, runId])
 
   const sendMessage = useCallback(async (text: string) => {
     const message = text.trim()
@@ -110,6 +152,7 @@ export function useChat() {
     setLoading(true)
     setPlan([])
     setEvents([])
+    setApprovals([])
     setMessages((current) => [...current, { id: `user-${Date.now()}`, role: 'user', content: message, timestamp: new Date().toISOString() }])
     try {
       const response = await fetch(`${apiUrl.replace(/\/$/, '')}/v1/runs`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, approval_mode: approvalMode }) })
@@ -138,7 +181,7 @@ export function useChat() {
       setMessages((current) => [...current, { id: `error-${Date.now()}`, role: 'system', content: 'The run could not be started. Check the API URL and try again.', timestamp: new Date().toISOString(), stage: 'error' }])
       setLoading(false)
     }
-  }, [apiUrl, appendEvent, closeStream, loading])
+  }, [apiUrl, appendEvent, approvalMode, closeStream, loading])
 
   const stage = useMemo<AgentStage>(() => {
     if (error) return 'error'
@@ -149,5 +192,5 @@ export function useChat() {
     return 'idle'
   }, [error, events, loading])
 
-  return { messages, plan, events, runId, loading, error, stage, approvalMode, setApprovalMode, sendMessage, appendEvent }
+  return { messages, plan, events, runId, approvals, loading, error, stage, approvalMode, setApprovalMode, sendMessage, appendEvent, decideApproval }
 }

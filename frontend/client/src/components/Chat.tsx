@@ -1,8 +1,9 @@
 // Dark Mission Control: the chat rail is the operator's narrative view of an active run.
 import { FormEvent, useEffect, useRef, useState } from 'react'
 import { ArrowUp, Check, Circle, Loader2, Radio, RotateCw, Sparkles, Wrench } from 'lucide-react'
+import ApprovalCards from './ApprovalCards'
 import MessageBubble from './MessageBubble'
-import type { AgentEvent, AgentStage, ApprovalMode, ChatMessage, PlanStep } from '../types'
+import type { AgentEvent, AgentStage, ApprovalGrantScope, ApprovalMode, ApprovalRequest, ChatMessage, PlanStep } from '../types'
 
 const stageMeta: Array<{ key: AgentStage; label: string; icon: typeof Sparkles }> = [
   { key: 'planning', label: 'Plan', icon: Sparkles },
@@ -11,7 +12,7 @@ const stageMeta: Array<{ key: AgentStage; label: string; icon: typeof Sparkles }
   { key: 'completed', label: 'Done', icon: Check },
 ]
 
-export default function Chat({ messages, plan, events, loading, error, stage, connected, runId, onSend, approvalMode, onApprovalModeChange }: { messages: ChatMessage[]; plan: PlanStep[]; events: AgentEvent[]; loading: boolean; error?: string; stage: AgentStage; connected: boolean; runId?: string; onSend: (message: string) => void; approvalMode: ApprovalMode; onApprovalModeChange: (mode: ApprovalMode) => void }) {
+export default function Chat({ messages, plan, events, approvals, loading, error, stage, connected, runId, onSend, onApprovalDecision, approvalMode, onApprovalModeChange }: { messages: ChatMessage[]; plan: PlanStep[]; events: AgentEvent[]; approvals: ApprovalRequest[]; loading: boolean; error?: string; stage: AgentStage; connected: boolean; runId?: string; onSend: (message: string) => void; onApprovalDecision: (approvalId: string, approved: boolean, grantScope: ApprovalGrantScope) => void; approvalMode: ApprovalMode; onApprovalModeChange: (mode: ApprovalMode) => void }) {
   const [draft, setDraft] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
   useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }) }, [messages, events])
@@ -33,6 +34,7 @@ export default function Chat({ messages, plan, events, loading, error, stage, co
       <div ref={scrollRef} className="scrollbar-thin flex-1 space-y-5 overflow-y-auto px-5 py-6 sm:px-7">
         {messages.map((message) => <MessageBubble key={message.id} message={message} />)}
         {loading && <div className="flex items-center gap-3 text-text-dim"><div className="grid h-8 w-8 place-items-center rounded-[10px] border border-signal-ice/20 bg-signal-ice/10 text-signal-ice"><Loader2 size={15} className="animate-spin" /></div><div className="font-mono text-[11px] uppercase tracking-[0.12em]">Agent is working<span className="typing-dots">...</span></div></div>}
+        <ApprovalCards approvals={approvals} onDecision={onApprovalDecision} />
         {events.length > 0 && <div className="border-t border-white/[0.07] pt-5"><div className="mb-3 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.16em] text-text-dim"><Radio size={12} className="text-signal-ice" /> Event trace</div><div className="space-y-2">{events.slice(-5).map((event, index) => <div key={event.id || index} className="flex gap-3 text-[11px] text-text-muted"><Circle size={7} className="mt-1.5 shrink-0 text-signal-ice" /><span>{event.message || event.content || event.text || 'Agent event received'}</span></div>)}</div></div>}
       </div>
       <div className="border-t border-white/[0.08] bg-[#0a0e13]/70 px-5 py-4 sm:px-7">

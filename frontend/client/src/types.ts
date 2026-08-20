@@ -45,6 +45,19 @@ export interface ChatMessage {
   stage?: AgentStage
 }
 
+export type ApprovalGrantScope = 'once' | 'run' | 'workspace' | 'all_approved_run'
+
+export interface ApprovalRequest {
+  id: string
+  run_id: string
+  action_type: string
+  scope: Record<string, unknown>
+  status: 'pending' | 'approved' | 'denied' | string
+  requested_at: string
+  decided_at?: string | null
+  expires_at?: string | null
+}
+
 export interface RunSubmission {
   run_id: string
   status: string
