@@ -15,6 +15,7 @@ class RuntimeConfig:
     device_token: str = ""
     device_name: str = "Local Agent Room Runtime"
     runtime_version: str = "0.1.0"
+    installed_build: str = "source"
     public_key: str = ""
 
     @property

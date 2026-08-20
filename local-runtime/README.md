@@ -73,3 +73,31 @@ docker compose -f compose.graphiti.yml up -d
 Both Neo4j ports bind to `127.0.0.1`; they must not be published to the Internet. Install the optional runtime dependency with `pip install -e '.[graphiti]'` and configure a compatible Graphiti client using the local Bolt endpoint. The local memory bridge creates immutable episode envelopes containing a project group ID, source run, source commit and occurrence time. Those envelopes enter the same durable outbox as notes and tasks.
 
 When the PC reconnects, the cloud accepts each episode ID once and sends any cloud-originated episode envelopes that the PC missed. The graph database remains a local derived index: it can be rebuilt by replaying authorized envelopes, while cloud SQLite remains the authority for identity, permissions and synchronization cursors.
+
+## Installation and updates
+
+The runtime has a **`runtime-latest` GitHub Release channel**. Every push to `main` runs the local runtime test suite, builds a wheel, generates `runtime-update.json` and a SHA-256 checksum, then replaces the verified assets in that channel.
+
+For an initial Linux or macOS installation, download and review the bootstrap script before running it:
+
+```bash
+curl -fsSLo install-agent-room-runtime.sh https://raw.githubusercontent.com/VadimChudin/1010100111101V/main/local-runtime/installer/install.sh
+bash install-agent-room-runtime.sh
+```
+
+For Windows PowerShell, download and review `local-runtime/installer/install.ps1` from the same repository, then execute it from a user-owned directory. Both bootstrappers fetch the manifest from `runtime-latest`, verify that its asset URL belongs to that release, and validate the downloaded wheel using SHA-256 before installing it.
+
+To inspect or manually apply an update after installation:
+
+```bash
+agent-room-runtime update --config ~/.agent-room/default/runtime.json
+agent-room-runtime update --config ~/.agent-room/default/runtime.json --apply
+```
+
+To keep the installed runtime current while it synchronizes, enable the verified update channel:
+
+```bash
+agent-room-runtime serve --config ~/.agent-room/default/runtime.json --auto-update
+```
+
+The service checks at most once per hour, stages an update, verifies its checksum again immediately before installation, then restarts itself. The runtime configuration, device pairing credential, SQLite outbox and Graphiti volume live under the state directory and are never replaced by an application update.

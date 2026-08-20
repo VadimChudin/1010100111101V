@@ -1,0 +1,48 @@
+name: Runtime Release Channel
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: runtime-release-main
+  cancel-in-progress: false
+
+jobs:
+  publish-runtime-latest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install runtime build and test tooling
+        run: python -m pip install --upgrade pip build && python -m pip install -e './local-runtime[test]'
+      - name: Verify local runtime
+        run: python -m pytest -q local-runtime/tests
+      - name: Build runtime wheel
+        run: python -m build --wheel --outdir local-runtime/dist local-runtime
+      - name: Prepare verified release assets
+        run: python local-runtime/scripts/build_release_manifest.py --dist dist --output release --build "${{ github.sha }}"
+      - name: Move runtime-latest tag to this verified build
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f runtime-latest "${{ github.sha }}"
+          git push --force origin refs/tags/runtime-latest
+      - name: Create or update latest runtime release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view runtime-latest >/dev/null 2>&1; then
+            gh release delete-asset runtime-latest agent_room_runtime-latest-py3-none-any.whl runtime-update.json SHA256SUMS --yes || true
+            gh release edit runtime-latest --title "Agent Room Runtime — latest" --notes "Automated verified runtime channel. Build: ${{ github.sha }}"
+          else
+            gh release create runtime-latest --title "Agent Room Runtime — latest" --notes "Automated verified runtime channel. Build: ${{ github.sha }}" --target "${{ github.sha }}"
+          fi
+          gh release upload runtime-latest local-runtime/release/agent_room_runtime-latest-py3-none-any.whl local-runtime/release/runtime-update.json local-runtime/release/SHA256SUMS --clobber

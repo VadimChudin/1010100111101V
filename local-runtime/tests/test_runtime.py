@@ -59,3 +59,42 @@ async def test_graphiti_memory_enqueues_provenance_episode(tmp_path):
     assert pending[0]["entity_id"] == episode_id
     assert pending[0]["type"] == "graphiti.episode"
     assert pending[0]["payload"]["group_id"] == "project-1"
+
+
+def test_release_manifest_rejects_incomplete_or_invalid_payloads():
+    from agent_room_runtime.updates import ReleaseManifest
+
+    with pytest.raises(ValueError):
+        ReleaseManifest.from_payload({"schema": 1})
+    with pytest.raises(ValueError):
+        ReleaseManifest.from_payload({
+            "schema": 2, "version": "0.1.0", "build": "abc", "asset_name": "runtime.whl", "asset_url": "https://example/runtime.whl",
+            "sha256": "a" * 64, "published_at": "2026-08-20T12:00:00+00:00",
+        })
+
+
+def test_verified_apply_preserves_pairing_and_records_release(monkeypatch, tmp_path):
+    from agent_room_runtime.config import RuntimeConfig
+    from agent_room_runtime.updates import ReleaseManifest, RuntimeUpdater
+
+    wheel = tmp_path / "agent_room_runtime-0.1.0-py3-none-any.whl"
+    wheel.write_bytes(b"verified-wheel")
+    import hashlib
+    manifest = ReleaseManifest(
+        schema=1, version="0.1.0", build="build-123", asset_name=wheel.name, asset_url="https://example/runtime.whl",
+        sha256=hashlib.sha256(wheel.read_bytes()).hexdigest(), published_at="2026-08-20T12:00:00+00:00",
+    )
+    config = RuntimeConfig(
+        cloud_url="https://cloud.example", project_id="project-1", workspace_root=str(tmp_path), state_dir=str(tmp_path / "state"),
+        device_id="paired-device", device_token="opaque-device-token",
+    )
+    calls = []
+    monkeypatch.setattr("agent_room_runtime.updates.subprocess.run", lambda command, check: calls.append((command, check)))
+
+    RuntimeUpdater(config).apply(manifest, wheel)
+
+    assert calls and "--force-reinstall" in calls[0][0]
+    assert config.installed_build == "build-123"
+    assert config.device_id == "paired-device"
+    assert config.device_token == "opaque-device-token"
+    assert config.config_path.is_file()

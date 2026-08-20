@@ -12,3 +12,8 @@ workspace/
 .DS_Store
 
 src/workspace/__pycache__/
+
+local-runtime/dist/
+local-runtime/release/
+local-runtime/build/
+local-runtime/*.egg-info/

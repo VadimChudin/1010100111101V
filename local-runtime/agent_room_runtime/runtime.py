@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import secrets
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from time import monotonic
 
 import httpx
 
@@ -105,13 +107,36 @@ class LocalRuntime:
         self.outbox.apply_server_events(list(result.get("events", [])), int(result["server_cursor"]), iso_now())
         return result
 
-    async def sync_forever(self, interval_seconds: float = 10.0, max_backoff_seconds: float = 60.0) -> None:
+    async def sync_forever(
+        self,
+        interval_seconds: float = 10.0,
+        max_backoff_seconds: float = 60.0,
+        *,
+        auto_update: bool = False,
+        update_interval_seconds: float = 3600.0,
+    ) -> None:
         """Run under a local service manager; failures retain outbox data and retry safely."""
         delay = max(1.0, interval_seconds)
+        next_update_check = 0.0
         while True:
             try:
                 await self.sync_once()
                 delay = max(1.0, interval_seconds)
             except (httpx.HTTPError, RuntimeError):
                 delay = min(max_backoff_seconds, delay * 2)
+            if auto_update and monotonic() >= next_update_check:
+                next_update_check = monotonic() + max(300.0, update_interval_seconds)
+                try:
+                    from .updates import RuntimeUpdater
+
+                    manifest, staged = await RuntimeUpdater(self.config).check_and_stage()
+                    if manifest is not None and staged is not None:
+                        RuntimeUpdater(self.config).apply(manifest, staged)
+                        os.execv(
+                            os.sys.executable,
+                            [os.sys.executable, "-m", "agent_room_runtime.cli", "serve", "--config", str(self.config.config_path), "--auto-update"],
+                        )
+                except (httpx.HTTPError, OSError, RuntimeError, ValueError):
+                    # Updates never block sync or erase a durable outbox; retry on the next update interval.
+                    pass
             await asyncio.sleep(delay)

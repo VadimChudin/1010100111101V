@@ -8,6 +8,7 @@ from pathlib import Path
 from .config import RuntimeConfig
 from .runtime import LocalRuntime
 from .serena import SerenaLaunchSpec
+from .updates import RuntimeUpdater
 
 
 def load_runtime(config_path: str) -> LocalRuntime:
@@ -35,6 +36,12 @@ def main() -> None:
     serve = subparsers.add_parser("serve", help="Run automatic outbox synchronization with reconnect backoff")
     serve.add_argument("--config", required=True)
     serve.add_argument("--interval-seconds", type=float, default=10.0)
+    serve.add_argument("--auto-update", action="store_true", help="Check the verified runtime-latest channel and restart after a valid update")
+    serve.add_argument("--update-interval-seconds", type=float, default=3600.0)
+
+    update = subparsers.add_parser("update", help="Check and stage the verified latest runtime release")
+    update.add_argument("--config", required=True)
+    update.add_argument("--apply", action="store_true", help="Install the staged verified update after download")
 
     serena = subparsers.add_parser("serena-command", help="Print hardened local-only Serena launch command")
     serena.add_argument("--config", required=True)
@@ -59,7 +66,25 @@ def main() -> None:
         print(json.dumps(asyncio.run(load_runtime(arguments.config).sync_once()), indent=2))
         return
     if arguments.command == "serve":
-        asyncio.run(load_runtime(arguments.config).sync_forever(arguments.interval_seconds))
+        asyncio.run(load_runtime(arguments.config).sync_forever(
+            arguments.interval_seconds, auto_update=arguments.auto_update, update_interval_seconds=arguments.update_interval_seconds
+        ))
+        return
+    if arguments.command == "update":
+        config = RuntimeConfig.load(arguments.config)
+        updater = RuntimeUpdater(config)
+        manifest, wheel_path = asyncio.run(updater.check_and_stage())
+        if manifest is None:
+            print(json.dumps({"status": "release-unavailable"}))
+            return
+        if wheel_path is None:
+            print(json.dumps({"status": "up-to-date", "build": manifest.build, "version": manifest.version}))
+            return
+        if arguments.apply:
+            updater.apply(manifest, wheel_path)
+            print(json.dumps({"status": "updated", "build": manifest.build, "version": manifest.version}))
+        else:
+            print(json.dumps({"status": "staged", "build": manifest.build, "version": manifest.version, "path": str(wheel_path)}))
         return
     if arguments.command == "serena-command":
         config = RuntimeConfig.load(arguments.config)
