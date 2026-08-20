@@ -6,7 +6,9 @@ COPY pyproject.toml ./
 RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir .
 COPY src ./src
 COPY README.md ./README.md
-RUN mkdir -p /workspace /app/data && chown -R appuser:appuser /app /workspace
-USER appuser
+COPY docker-entrypoint.sh /usr/local/bin/agent-entrypoint
+RUN chmod 755 /usr/local/bin/agent-entrypoint \
+    && mkdir -p /workspace /app/data /data \
+    && chown -R appuser:appuser /app /workspace /data
 EXPOSE 8000
-CMD ["sh", "-c", "uvicorn src.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+ENTRYPOINT ["/usr/local/bin/agent-entrypoint"]
