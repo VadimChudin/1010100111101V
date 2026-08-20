@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import re
 import sqlite3
-from collections.abc import Callable
+import subprocess
+import tomllib
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -15,6 +19,9 @@ from .models import (
     ModuleCreateRequest,
     NoteCreateRequest,
     ProjectCreateRequest,
+    RepositoryDependency,
+    RepositoryFile,
+    RepositoryIndex,
     TaskCreateRequest,
     TaskStatus,
     WorkspaceMarker,
@@ -47,6 +54,7 @@ CREATE TABLE IF NOT EXISTS modules (
     position_x REAL NOT NULL DEFAULT 0,
     position_y REAL NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'active',
+    origin TEXT NOT NULL DEFAULT 'manual',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -89,28 +97,111 @@ CREATE TABLE IF NOT EXISTS module_markers (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS repository_indexes (
+    project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    repository_url TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    commit_sha TEXT NOT NULL,
+    indexed_at TEXT NOT NULL,
+    files_count INTEGER NOT NULL,
+    modules_count INTEGER NOT NULL,
+    dependencies_json TEXT NOT NULL DEFAULT '[]'
+);
+
+CREATE TABLE IF NOT EXISTS repository_files (
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    language TEXT,
+    size INTEGER,
+    PRIMARY KEY (project_id, path)
+);
+
 CREATE INDEX IF NOT EXISTS idx_modules_project ON modules(project_id);
 CREATE INDEX IF NOT EXISTS idx_notes_project_module ON notes(project_id, module_id);
 CREATE INDEX IF NOT EXISTS idx_workspace_tasks_project_module ON workspace_tasks(project_id, module_id);
 CREATE INDEX IF NOT EXISTS idx_markers_project_module ON module_markers(project_id, module_id);
+CREATE INDEX IF NOT EXISTS idx_repository_files_project ON repository_files(project_id, kind, path);
 """
 
+LEGACY_DEFAULT_SCOPES = {
+    "src/orchestrator",
+    "frontend/client/src/hooks/useChat.ts",
+    "src/storage/run_store.py",
+    "src/policy",
+    "frontend/client/src/components/TaskGraph.tsx",
+}
 
-DEFAULT_MODULES = (
-    {"title": "Agent Orchestrator", "kind": "backend", "source_scope": "src/orchestrator", "aliases": ["agent", "graph", "orchestrator"], "position_x": 80, "position_y": 120},
-    {"title": "Chat & Timeline", "kind": "frontend", "source_scope": "frontend/client/src/hooks/useChat.ts", "aliases": ["chat", "timeline", "conversation"], "position_x": 390, "position_y": 80},
-    {"title": "Durable State", "kind": "backend", "source_scope": "src/storage/run_store.py", "aliases": ["storage", "runs", "sqlite"], "position_x": 400, "position_y": 300},
-    {"title": "Policy Gateway", "kind": "backend", "source_scope": "src/policy", "aliases": ["approvals", "tools", "permissions"], "position_x": 720, "position_y": 180},
-    {"title": "Workspace Canvas", "kind": "frontend", "source_scope": "frontend/client/src/components/TaskGraph.tsx", "aliases": ["workspace", "canvas", "modules"], "position_x": 720, "position_y": 420},
-)
+SOURCE_SUFFIXES = {".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css", ".html", ".sql"}
+LANGUAGES = {
+    ".py": "Python",
+    ".ts": "TypeScript",
+    ".tsx": "TSX",
+    ".js": "JavaScript",
+    ".jsx": "JSX",
+    ".mjs": "JavaScript",
+    ".cjs": "JavaScript",
+    ".css": "CSS",
+    ".html": "HTML",
+    ".json": "JSON",
+    ".md": "Markdown",
+    ".toml": "TOML",
+    ".yml": "YAML",
+    ".yaml": "YAML",
+    ".sh": "Shell",
+    ".sql": "SQL",
+    ".dockerfile": "Dockerfile",
+}
+PYTHON_IMPORT = re.compile(r"^\s*(?:from|import)\s+([A-Za-z_][\w.]*)", re.MULTILINE)
+PYTHON_REQUIREMENT = re.compile(r"^\s*([A-Za-z0-9_.-]+)(.*)$")
+JS_IMPORT = re.compile(r"(?:import|export)\s+(?:[^'\";]+?\s+from\s+)?['\"]([^'\"]+)['\"]|require\(\s*['\"]([^'\"]+)['\"]\s*\)")
 
 
 def now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def module_id(project_id: str, source_scope: str) -> str:
+    digest = hashlib.sha256(f"{project_id}:{source_scope}".encode("utf-8")).hexdigest()[:24]
+    return f"git-{digest}"
+
+
+def language_for(path: str) -> str | None:
+    suffix = Path(path).suffix.lower()
+    if path.lower().endswith("dockerfile"):
+        return "Dockerfile"
+    return LANGUAGES.get(suffix)
+
+
+def module_scope(path: str) -> str | None:
+    parts = Path(path).parts
+    if Path(path).suffix.lower() not in SOURCE_SUFFIXES:
+        return None
+    if len(parts) >= 2 and parts[0] == "src":
+        return "/".join(parts[:2])
+    if len(parts) >= 4 and parts[:3] == ("frontend", "client", "src"):
+        return "/".join(parts[:4])
+    if parts and parts[0] == "tests":
+        return "tests"
+    return None
+
+
+def module_kind(scope: str) -> str:
+    if scope.startswith("frontend/"):
+        return "frontend"
+    if scope.startswith("src/"):
+        return "backend"
+    if scope == "tests":
+        return "test"
+    return "repository"
+
+
+def title_for_scope(scope: str) -> str:
+    return scope.replace("/", " · ").replace("_", " ").title()
+
+
 class WorkspaceStore:
-    """Project memory repository sharing the durable SQLite WAL database."""
+    """Durable workspace context plus a Git-derived, read-only project map."""
 
     def __init__(self, run_store: SQLiteRunStore) -> None:
         self.run_store = run_store
@@ -132,6 +223,9 @@ class WorkspaceStore:
         def create_schema() -> None:
             with self._connect() as connection:
                 connection.executescript(WORKSPACE_SCHEMA)
+                columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(modules)").fetchall()}
+                if "origin" not in columns:
+                    connection.execute("ALTER TABLE modules ADD COLUMN origin TEXT NOT NULL DEFAULT 'manual'")
 
         await asyncio.to_thread(create_schema)
         self._initialized = True
@@ -145,7 +239,7 @@ class WorkspaceStore:
         return WorkspaceModule(
             id=row["id"], project_id=row["project_id"], title=row["title"], kind=row["kind"], source_scope=row["source_scope"],
             aliases=json.loads(row["aliases_json"]), dependencies=json.loads(row["dependencies_json"]), position_x=row["position_x"], position_y=row["position_y"],
-            status=row["status"], created_at=row["created_at"], updated_at=row["updated_at"],
+            status=row["status"], origin=row["origin"] if "origin" in row.keys() else "manual", created_at=row["created_at"], updated_at=row["updated_at"],
         )
 
     @staticmethod
@@ -168,6 +262,14 @@ class WorkspaceStore:
         return WorkspaceMarker(
             id=row["id"], project_id=row["project_id"], module_id=row["module_id"], type=row["type"], title=row["title"], state=row["state"],
             source_kind=row["source_kind"], source_id=row["source_id"], created_at=row["created_at"],
+        )
+
+    @staticmethod
+    def _repository_index(row: sqlite3.Row) -> RepositoryIndex:
+        return RepositoryIndex(
+            project_id=row["project_id"], repository_url=row["repository_url"], branch=row["branch"], commit_sha=row["commit_sha"],
+            indexed_at=row["indexed_at"], files_count=row["files_count"], modules_count=row["modules_count"],
+            dependencies=[RepositoryDependency.model_validate(item) for item in json.loads(row["dependencies_json"])],
         )
 
     def _create_project_sync(self, project_id: str, request: ProjectCreateRequest) -> WorkspaceProject:
@@ -203,14 +305,9 @@ class WorkspaceStore:
                 timestamp = now()
                 connection.execute(
                     "INSERT INTO projects (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-                    ("default", "AI Agent Platform", "Default product workspace for the agent platform.", timestamp, timestamp),
+                    ("default", "AI Agent Platform", "Git-derived product workspace for the agent platform.", timestamp, timestamp),
                 )
-                for item in DEFAULT_MODULES:
-                    connection.execute(
-                        "INSERT INTO modules (id, project_id, title, kind, source_scope, aliases_json, dependencies_json, position_x, position_y, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        (new_id(), "default", item["title"], item["kind"], item["source_scope"], json.dumps(item["aliases"]), "[]", item["position_x"], item["position_y"], "active", timestamp, timestamp),
-                    )
-                return WorkspaceProject(id="default", name="AI Agent Platform", description="Default product workspace for the agent platform.", created_at=timestamp, updated_at=timestamp)
+                return WorkspaceProject(id="default", name="AI Agent Platform", description="Git-derived product workspace for the agent platform.", created_at=timestamp, updated_at=timestamp)
 
         return await asyncio.to_thread(create_default)
 
@@ -223,21 +320,21 @@ class WorkspaceStore:
         await self.initialize()
         return await asyncio.to_thread(self._get_project_sync, project_id)
 
-    def _create_module_sync(self, project_id: str, module_id: str, request: ModuleCreateRequest) -> WorkspaceModule:
+    def _create_module_sync(self, project_id: str, module_id_value: str, request: ModuleCreateRequest) -> WorkspaceModule:
         timestamp = now()
         with self._connect() as connection:
             connection.execute(
-                "INSERT INTO modules (id, project_id, title, kind, source_scope, aliases_json, dependencies_json, position_x, position_y, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (module_id, project_id, request.title, request.kind, request.source_scope, json.dumps(request.aliases), json.dumps(request.dependencies), request.position_x, request.position_y, request.status, timestamp, timestamp),
+                "INSERT INTO modules (id, project_id, title, kind, source_scope, aliases_json, dependencies_json, position_x, position_y, status, origin, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (module_id_value, project_id, request.title, request.kind, request.source_scope, json.dumps(request.aliases), json.dumps(request.dependencies), request.position_x, request.position_y, request.status, "manual", timestamp, timestamp),
             )
-        return WorkspaceModule(id=module_id, project_id=project_id, created_at=timestamp, updated_at=timestamp, **request.model_dump())
+        return WorkspaceModule(id=module_id_value, project_id=project_id, origin="manual", created_at=timestamp, updated_at=timestamp, **request.model_dump())
 
     async def create_module(self, project_id: str, request: ModuleCreateRequest) -> WorkspaceModule:
         await self.initialize()
         return await asyncio.to_thread(self._create_module_sync, project_id, new_id(), request)
 
-    def _module_belongs_to_project(self, connection: sqlite3.Connection, project_id: str, module_id: str) -> bool:
-        return connection.execute("SELECT 1 FROM modules WHERE id = ? AND project_id = ?", (module_id, project_id)).fetchone() is not None
+    def _module_belongs_to_project(self, connection: sqlite3.Connection, project_id: str, module_id_value: str) -> bool:
+        return connection.execute("SELECT 1 FROM modules WHERE id = ? AND project_id = ?", (module_id_value, project_id)).fetchone() is not None
 
     def _create_note_sync(self, project_id: str, note_id: str, request: NoteCreateRequest, author: str) -> WorkspaceNote:
         timestamp = now()
@@ -289,12 +386,223 @@ class WorkspaceStore:
         await self.initialize()
         return await asyncio.to_thread(self._set_task_status_sync, task_id, status)
 
+    @staticmethod
+    def _run_git(repo_root: Path, *args: str) -> str:
+        try:
+            completed = subprocess.run(
+                ["git", "-C", str(repo_root), *args], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=20,
+            )
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError("The configured workspace is not a readable Git repository") from exc
+        return completed.stdout.strip()
+
+    @staticmethod
+    def _tracked_files(repo_root: Path) -> list[str]:
+        output = WorkspaceStore._run_git(repo_root, "ls-files", "-z")
+        return sorted(path for path in output.split("\0") if path and not path.startswith(".git/"))
+
+    @staticmethod
+    def _repository_files(repo_root: Path, tracked_paths: Iterable[str]) -> list[RepositoryFile]:
+        directories: set[str] = set()
+        files: list[RepositoryFile] = []
+        for raw_path in tracked_paths:
+            relative = Path(raw_path)
+            for parent in relative.parents:
+                if parent != Path("."):
+                    directories.add(parent.as_posix())
+            full_path = repo_root / relative
+            size = full_path.stat().st_size if full_path.is_file() else None
+            files.append(RepositoryFile(path=relative.as_posix(), kind="file", language=language_for(relative.as_posix()), size=size))
+        directory_items = [RepositoryFile(path=path, kind="directory") for path in sorted(directories)]
+        return [*directory_items, *files]
+
+    @staticmethod
+    def _read_text(repo_root: Path, relative_path: str) -> str:
+        try:
+            return (repo_root / relative_path).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return ""
+
+    @staticmethod
+    def _python_dependency(requirement: str, group: str) -> RepositoryDependency:
+        normalized = requirement.split(";", 1)[0].strip()
+        match = PYTHON_REQUIREMENT.match(normalized)
+        if match is None:
+            return RepositoryDependency(name=normalized, ecosystem="python", group=group)
+        return RepositoryDependency(name=match.group(1), ecosystem="python", version=match.group(2).strip(), group=group)
+
+    @classmethod
+    def _dependencies(cls, repo_root: Path, tracked_paths: set[str]) -> list[RepositoryDependency]:
+        dependencies: list[RepositoryDependency] = []
+        if "pyproject.toml" in tracked_paths:
+            try:
+                config = tomllib.loads(cls._read_text(repo_root, "pyproject.toml"))
+            except tomllib.TOMLDecodeError:
+                config = {}
+            project = config.get("project", {}) if isinstance(config, dict) else {}
+            for requirement in project.get("dependencies", []) if isinstance(project, dict) else []:
+                dependencies.append(cls._python_dependency(str(requirement), "production"))
+            optional = project.get("optional-dependencies", {}) if isinstance(project, dict) else {}
+            if isinstance(optional, dict):
+                for group, values in optional.items():
+                    for requirement in values if isinstance(values, list) else []:
+                        dependencies.append(cls._python_dependency(str(requirement), str(group)))
+        for manifest in sorted(path for path in tracked_paths if path.endswith("package.json")):
+            try:
+                package = json.loads(cls._read_text(repo_root, manifest))
+            except json.JSONDecodeError:
+                package = {}
+            for group, key in (("production", "dependencies"), ("development", "devDependencies")):
+                entries = package.get(key, {}) if isinstance(package, dict) else {}
+                if isinstance(entries, dict):
+                    dependencies.extend(RepositoryDependency(name=str(name), ecosystem="node", version=str(version), group=group) for name, version in entries.items())
+        unique: dict[tuple[str, str, str], RepositoryDependency] = {}
+        for dependency in dependencies:
+            unique[(dependency.ecosystem, dependency.group, dependency.name)] = dependency
+        return sorted(unique.values(), key=lambda item: (item.ecosystem, item.group, item.name.lower()))
+
+    @classmethod
+    def _module_import_scopes(cls, repo_root: Path, path: str, available_scopes: set[str]) -> set[str]:
+        content = cls._read_text(repo_root, path)
+        source = Path(path)
+        scopes: set[str] = set()
+        if source.suffix == ".py":
+            for match in PYTHON_IMPORT.finditer(content):
+                package = match.group(1)
+                candidate = "/".join(package.split(".")[:2])
+                if candidate in available_scopes:
+                    scopes.add(candidate)
+        elif source.suffix in {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}:
+            for match in JS_IMPORT.finditer(content):
+                raw_target = match.group(1) or match.group(2)
+                if not raw_target or not raw_target.startswith("."):
+                    continue
+                resolved = (source.parent / raw_target).resolve()
+                try:
+                    relative = resolved.relative_to(repo_root.resolve()).as_posix()
+                except ValueError:
+                    continue
+                for suffix in (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"):
+                    scope = module_scope(relative + suffix) if Path(relative).suffix == "" else module_scope(relative)
+                    if scope in available_scopes:
+                        scopes.add(scope)
+        return scopes
+
+    @classmethod
+    def _derived_modules(cls, project_id: str, repo_root: Path, tracked_paths: list[str]) -> list[dict[str, Any]]:
+        scopes = sorted({scope for path in tracked_paths if (scope := module_scope(path)) is not None})
+        scope_set = set(scopes)
+        grouped: dict[str, list[str]] = {scope: [] for scope in scopes}
+        for path in tracked_paths:
+            scope = module_scope(path)
+            if scope is not None:
+                grouped[scope].append(path)
+        modules: list[dict[str, Any]] = []
+        for index, scope in enumerate(scopes):
+            dependency_scopes: set[str] = set()
+            for path in grouped[scope]:
+                dependency_scopes.update(cls._module_import_scopes(repo_root, path, scope_set))
+            dependency_scopes.discard(scope)
+            modules.append(
+                {
+                    "id": module_id(project_id, scope),
+                    "title": title_for_scope(scope),
+                    "kind": module_kind(scope),
+                    "source_scope": scope,
+                    "aliases": sorted({scope.split("/")[-1], *scope.replace("/", " ").split()}),
+                    "dependencies": [module_id(project_id, dependency) for dependency in sorted(dependency_scopes)],
+                    "position_x": float(80 + (index % 4) * 300),
+                    "position_y": float(120 + (index // 4) * 190),
+                }
+            )
+        return modules
+
+    def _index_repository_sync(self, project_id: str, repo_path: str | Path) -> RepositoryIndex:
+        repo_root = Path(repo_path).resolve()
+        if not repo_root.is_dir():
+            raise RuntimeError("Configured repository path does not exist")
+        tracked_paths = self._tracked_files(repo_root)
+        tracked_set = set(tracked_paths)
+        files = self._repository_files(repo_root, tracked_paths)
+        dependencies = self._dependencies(repo_root, tracked_set)
+        modules = self._derived_modules(project_id, repo_root, tracked_paths)
+        repository_url = self._run_git(repo_root, "config", "--get", "remote.origin.url") or "local"
+        branch = self._run_git(repo_root, "rev-parse", "--abbrev-ref", "HEAD")
+        commit_sha = self._run_git(repo_root, "rev-parse", "HEAD")
+        indexed_at = now()
+
+        with self._connect() as connection:
+            if connection.execute("SELECT 1 FROM projects WHERE id = ?", (project_id,)).fetchone() is None:
+                raise LookupError("Project not found")
+            connection.execute("DELETE FROM repository_files WHERE project_id = ?", (project_id,))
+            connection.executemany(
+                "INSERT INTO repository_files (project_id, path, kind, language, size) VALUES (?, ?, ?, ?, ?)",
+                [(project_id, item.path, item.kind, item.language, item.size) for item in files],
+            )
+            retained_git_ids = [item["id"] for item in modules]
+            if retained_git_ids:
+                placeholders = ",".join("?" for _ in retained_git_ids)
+                connection.execute(
+                    f"DELETE FROM modules WHERE project_id = ? AND origin = 'git' AND id NOT IN ({placeholders}) AND NOT EXISTS (SELECT 1 FROM notes WHERE notes.module_id = modules.id) AND NOT EXISTS (SELECT 1 FROM workspace_tasks WHERE workspace_tasks.module_id = modules.id)",
+                    [project_id, *retained_git_ids],
+                )
+                connection.execute(
+                    f"UPDATE modules SET status = 'orphaned', updated_at = ? WHERE project_id = ? AND origin = 'git' AND id NOT IN ({placeholders})",
+                    [indexed_at, project_id, *retained_git_ids],
+                )
+            else:
+                connection.execute(
+                    "DELETE FROM modules WHERE project_id = ? AND origin = 'git' AND NOT EXISTS (SELECT 1 FROM notes WHERE notes.module_id = modules.id) AND NOT EXISTS (SELECT 1 FROM workspace_tasks WHERE workspace_tasks.module_id = modules.id)",
+                    (project_id,),
+                )
+                connection.execute("UPDATE modules SET status = 'orphaned', updated_at = ? WHERE project_id = ? AND origin = 'git'", (indexed_at, project_id))
+            for scope in LEGACY_DEFAULT_SCOPES:
+                connection.execute(
+                    "DELETE FROM modules WHERE project_id = ? AND source_scope = ? AND origin = 'manual' AND NOT EXISTS (SELECT 1 FROM notes WHERE notes.module_id = modules.id) AND NOT EXISTS (SELECT 1 FROM workspace_tasks WHERE workspace_tasks.module_id = modules.id)",
+                    (project_id, scope),
+                )
+            connection.executemany(
+                "INSERT INTO modules (id, project_id, title, kind, source_scope, aliases_json, dependencies_json, position_x, position_y, status, origin, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'git', ?, ?) ON CONFLICT(id) DO UPDATE SET title = excluded.title, kind = excluded.kind, source_scope = excluded.source_scope, aliases_json = excluded.aliases_json, dependencies_json = excluded.dependencies_json, position_x = excluded.position_x, position_y = excluded.position_y, status = 'active', origin = 'git', updated_at = excluded.updated_at",
+                [
+                    (item["id"], project_id, item["title"], item["kind"], item["source_scope"], json.dumps(item["aliases"]), json.dumps(item["dependencies"]), item["position_x"], item["position_y"], "active", indexed_at, indexed_at)
+                    for item in modules
+                ],
+            )
+            connection.execute(
+                "INSERT INTO repository_indexes (project_id, repository_url, branch, commit_sha, indexed_at, files_count, modules_count, dependencies_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(project_id) DO UPDATE SET repository_url = excluded.repository_url, branch = excluded.branch, commit_sha = excluded.commit_sha, indexed_at = excluded.indexed_at, files_count = excluded.files_count, modules_count = excluded.modules_count, dependencies_json = excluded.dependencies_json",
+                (project_id, repository_url, branch, commit_sha, indexed_at, len([item for item in files if item.kind == "file"]), len(modules), json.dumps([item.model_dump() for item in dependencies])),
+            )
+            connection.execute("UPDATE projects SET updated_at = ? WHERE id = ?", (indexed_at, project_id))
+        return RepositoryIndex(project_id=project_id, repository_url=repository_url, branch=branch, commit_sha=commit_sha, indexed_at=indexed_at, files_count=len([item for item in files if item.kind == "file"]), modules_count=len(modules), dependencies=dependencies)
+
+    async def index_repository(self, project_id: str, repo_path: str | Path) -> RepositoryIndex:
+        await self.initialize()
+        return await asyncio.to_thread(self._index_repository_sync, project_id, repo_path)
+
+    def _repository_files_sync(self, project_id: str) -> list[RepositoryFile]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT path, kind, language, size FROM repository_files WHERE project_id = ? ORDER BY kind DESC, path", (project_id,)).fetchall()
+        return [RepositoryFile(path=row["path"], kind=row["kind"], language=row["language"], size=row["size"]) for row in rows]
+
+    async def repository_files(self, project_id: str) -> list[RepositoryFile]:
+        await self.initialize()
+        return await asyncio.to_thread(self._repository_files_sync, project_id)
+
+    def _repository_index_sync(self, project_id: str) -> RepositoryIndex | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM repository_indexes WHERE project_id = ?", (project_id,)).fetchone()
+        return self._repository_index(row) if row else None
+
+    async def repository_index(self, project_id: str) -> RepositoryIndex | None:
+        await self.initialize()
+        return await asyncio.to_thread(self._repository_index_sync, project_id)
+
     def _snapshot_sync(self, project_id: str) -> WorkspaceSnapshot | None:
         with self._connect() as connection:
             project = connection.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
             if project is None:
                 return None
-            modules = connection.execute("SELECT * FROM modules WHERE project_id = ? ORDER BY created_at", (project_id,)).fetchall()
+            modules = connection.execute("SELECT * FROM modules WHERE project_id = ? ORDER BY origin DESC, source_scope", (project_id,)).fetchall()
             notes = connection.execute("SELECT * FROM notes WHERE project_id = ? ORDER BY created_at DESC", (project_id,)).fetchall()
             tasks = connection.execute("SELECT * FROM workspace_tasks WHERE project_id = ? ORDER BY updated_at DESC", (project_id,)).fetchall()
             markers = connection.execute("SELECT * FROM module_markers WHERE project_id = ? ORDER BY created_at DESC", (project_id,)).fetchall()

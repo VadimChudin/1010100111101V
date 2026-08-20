@@ -101,8 +101,34 @@ export interface WorkspaceModule {
   position_x: number
   position_y: number
   status: string
+  origin: 'git' | 'manual' | string
   created_at: string
   updated_at: string
+}
+
+export interface RepositoryFile {
+  path: string
+  kind: 'file' | 'directory'
+  language?: string | null
+  size?: number | null
+}
+
+export interface RepositoryDependency {
+  name: string
+  ecosystem: 'python' | 'node'
+  version: string
+  group: string
+}
+
+export interface RepositoryIndex {
+  project_id: string
+  repository_url: string
+  branch: string
+  commit_sha: string
+  indexed_at: string
+  files_count: number
+  modules_count: number
+  dependencies: RepositoryDependency[]
 }
 
 export interface WorkspaceNote {

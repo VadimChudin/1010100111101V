@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import httpx
 from collections.abc import AsyncIterator
@@ -27,6 +28,8 @@ from src.workspace import (
     ModuleCreateRequest,
     NoteCreateRequest,
     ProjectCreateRequest,
+    RepositoryFile,
+    RepositoryIndex,
     TaskCreateRequest,
     TaskStatusRequest,
     WorkspaceModule,
@@ -182,6 +185,35 @@ async def get_workspace(project_id: str, request: Request):
     if snapshot is None:
         raise HTTPException(status_code=404, detail="Project not found")
     return snapshot
+
+
+@router.get("/projects/{project_id}/repository", response_model=RepositoryIndex)
+async def get_project_repository(project_id: str, request: Request):
+    await require_project_access(request, project_id)
+    index = await workspace_store().repository_index(project_id)
+    if index is None:
+        raise HTTPException(status_code=404, detail="Repository has not been indexed")
+    return index
+
+
+@router.get("/projects/{project_id}/files", response_model=list[RepositoryFile])
+async def get_project_files(project_id: str, request: Request):
+    await require_project_access(request, project_id)
+    store = workspace_store()
+    if await store.get_project(project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return await store.repository_files(project_id)
+
+
+@router.post("/projects/{project_id}/index", response_model=RepositoryIndex)
+async def index_project_repository(project_id: str, request: Request):
+    await require_project_access(request, project_id, ProjectRole.EDITOR)
+    try:
+        return await workspace_store().index_repository(project_id, Path(get_settings().workspace_root))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail="Repository index is unavailable") from exc
 
 
 @router.post("/projects/{project_id}/modules", response_model=WorkspaceModule, status_code=201)

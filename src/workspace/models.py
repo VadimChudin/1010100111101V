@@ -53,6 +53,7 @@ class ModuleCreateRequest(BaseModel):
 class WorkspaceModule(ModuleCreateRequest):
     id: str
     project_id: str
+    origin: str = "manual"
     created_at: str
     updated_at: str
 
@@ -103,6 +104,31 @@ class WorkspaceMarker(BaseModel):
     source_kind: str
     source_id: str
     created_at: str
+
+
+class RepositoryFile(BaseModel):
+    path: str = Field(min_length=1, max_length=1200)
+    kind: str = Field(pattern="^(file|directory)$")
+    language: str | None = Field(default=None, max_length=50)
+    size: int | None = Field(default=None, ge=0)
+
+
+class RepositoryDependency(BaseModel):
+    name: str = Field(min_length=1, max_length=240)
+    ecosystem: str = Field(pattern="^(python|node)$")
+    version: str = Field(default="", max_length=240)
+    group: str = Field(default="production", max_length=80)
+
+
+class RepositoryIndex(BaseModel):
+    project_id: str
+    repository_url: str
+    branch: str
+    commit_sha: str
+    indexed_at: str
+    files_count: int = Field(ge=0)
+    modules_count: int = Field(ge=0)
+    dependencies: list[RepositoryDependency] = Field(default_factory=list)
 
 
 class WorkspaceSnapshot(BaseModel):

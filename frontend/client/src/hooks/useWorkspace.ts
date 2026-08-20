@@ -1,15 +1,20 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { WorkspaceModule, WorkspaceSnapshot, WorkspaceTaskStatus } from '../types'
+import type { RepositoryFile, RepositoryIndex, WorkspaceModule, WorkspaceSnapshot, WorkspaceTaskStatus } from '../types'
 
 const apiRoot = () => (import.meta.env.VITE_API_URL || 'https://app-production-cc16.up.railway.app').replace(/\/$/, '')
 
+type WorkspaceRefreshOptions = { indexRepository?: boolean }
+
 export function useWorkspace() {
   const [workspace, setWorkspace] = useState<WorkspaceSnapshot>()
+  const [repository, setRepository] = useState<RepositoryIndex>()
+  const [files, setFiles] = useState<RepositoryFile[]>([])
   const [selectedModuleId, setSelectedModuleId] = useState<string>()
   const [loading, setLoading] = useState(true)
+  const [indexing, setIndexing] = useState(false)
   const [error, setError] = useState<string>()
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async ({ indexRepository = false }: WorkspaceRefreshOptions = {}) => {
     setLoading(true)
     try {
       const projectsResponse = await fetch(`${apiRoot()}/v1/projects`, { credentials: 'include' })
@@ -17,22 +22,37 @@ export function useWorkspace() {
       const projects = await projectsResponse.json() as Array<{ id: string }>
       const project = projects[0]
       if (!project) throw new Error('No workspace project is available')
-      const workspaceResponse = await fetch(`${apiRoot()}/v1/projects/${project.id}/workspace`, { credentials: 'include' })
+
+      if (indexRepository) {
+        setIndexing(true)
+        const response = await fetch(`${apiRoot()}/v1/projects/${project.id}/index`, { method: 'POST', credentials: 'include' })
+        if (!response.ok) throw new Error('Could not refresh the Git project map')
+      }
+
+      const [workspaceResponse, repositoryResponse, filesResponse] = await Promise.all([
+        fetch(`${apiRoot()}/v1/projects/${project.id}/workspace`, { credentials: 'include' }),
+        fetch(`${apiRoot()}/v1/projects/${project.id}/repository`, { credentials: 'include' }),
+        fetch(`${apiRoot()}/v1/projects/${project.id}/files`, { credentials: 'include' }),
+      ])
       if (!workspaceResponse.ok) throw new Error('Could not load workspace')
       const snapshot = await workspaceResponse.json() as WorkspaceSnapshot
       setWorkspace(snapshot)
       setSelectedModuleId((current) => current && snapshot.modules.some((module) => module.id === current) ? current : snapshot.modules[0]?.id)
+      setRepository(repositoryResponse.ok ? await repositoryResponse.json() as RepositoryIndex : undefined)
+      setFiles(filesResponse.ok ? await filesResponse.json() as RepositoryFile[] : [])
       setError(undefined)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load workspace')
     } finally {
+      setIndexing(false)
       setLoading(false)
     }
   }, [])
 
-  useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => { void refresh({ indexRepository: true }) }, [refresh])
 
   const selectedModule = workspace?.modules.find((module) => module.id === selectedModuleId)
+  const indexRepository = useCallback(async () => { await refresh({ indexRepository: true }) }, [refresh])
 
   const createNote = useCallback(async (module: WorkspaceModule, title: string, content: string, sourceRunId?: string) => {
     if (!workspace) return
@@ -61,5 +81,5 @@ export function useWorkspace() {
     await refresh()
   }, [refresh, workspace])
 
-  return { workspace, selectedModule, selectedModuleId, setSelectedModuleId, loading, error, refresh, createNote, createTask, updateTaskStatus }
+  return { workspace, repository, files, selectedModule, selectedModuleId, setSelectedModuleId, loading, indexing, error, refresh, indexRepository, createNote, createTask, updateTaskStatus }
 }
