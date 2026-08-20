@@ -21,7 +21,7 @@ function activityCopy(stage: AgentStage, events: AgentEvent[], loading: boolean)
 export default function Chat({ messages, plan: _plan, events, approvals, loading, error, stage, connected, runId, moduleTitle, onSend, onApprovalDecision, onCaptureNote, onCaptureTask, approvalMode, onApprovalModeChange }: { messages: ChatMessage[]; plan: PlanStep[]; events: AgentEvent[]; approvals: ApprovalRequest[]; loading: boolean; error?: string; stage: AgentStage; connected: boolean; runId?: string; moduleTitle?: string; onSend: (message: string) => void; onApprovalDecision: (approvalId: string, approved: boolean, grantScope: ApprovalGrantScope) => void; onCaptureNote: (runId: string, title: string, content: string) => Promise<void>; onCaptureTask: (runId: string, title: string, description: string) => Promise<void>; approvalMode: ApprovalMode; onApprovalModeChange: (mode: ApprovalMode) => void }) {
   const [draft, setDraft] = useState('')
   const [captureState, setCaptureState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
-  const [attachmentName, setAttachmentName] = useState<string>()
+  const [attachments, setAttachments] = useState<Array<{ name: string; excerpt?: string; unsupported?: boolean }>>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const status = useMemo(() => activityCopy(stage, events, loading), [events, loading, stage])
@@ -31,9 +31,29 @@ export default function Chat({ messages, plan: _plan, events, approvals, loading
   const submit = (event: FormEvent) => {
     event.preventDefault()
     if (!draft.trim() || loading) return
-    onSend(draft)
+    const attachmentContext = attachments.length ? `\n\n[Local attachments shared with this message]\n${attachments.map((attachment) => attachment.excerpt ? `--- ${attachment.name} ---\n${attachment.excerpt}` : `--- ${attachment.name} ---\nBinary or unsupported attachment remains local; ask the user for a text export or an explicit local-agent task to inspect it.`).join('\n\n')}` : ''
+    // The backend accepts 20k characters. Preserve the user's message and fit
+    // only as much locally extracted context as remains inside the request cap.
+    const contextBudget = Math.max(0, 18_000 - draft.length)
+    onSend(`${draft}${attachmentContext.slice(0, contextBudget)}`)
     setDraft('')
-    setAttachmentName(undefined)
+    setAttachments([])
+  }
+
+  const selectAttachments = async (files: FileList | null) => {
+    if (!files?.length) return
+    const selected = await Promise.all(Array.from(files).slice(0, 4).map(async (file) => {
+      const textLike = file.type.startsWith('text/') || /\.(md|txt|json|ya?ml|toml|xml|csv|ts|tsx|js|jsx|py|go|rs|java|kt|css|html|sql|sh)$/i.test(file.name)
+      if (!textLike) return { name: file.name, unsupported: true }
+      try {
+        const content = await file.text()
+        const clipped = content.slice(0, 12_000)
+        return { name: file.name, excerpt: `${clipped}${content.length > clipped.length ? '\n[excerpt clipped locally]' : ''}` }
+      } catch {
+        return { name: file.name, unsupported: true }
+      }
+    }))
+    setAttachments(selected)
   }
 
   const latestAnswer = [...messages].reverse().find((message) => message.role === 'assistant' && message.runId === runId)?.content || ''
@@ -70,10 +90,10 @@ export default function Chat({ messages, plan: _plan, events, approvals, loading
         <div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><Sparkles size={13} className="text-signal-ice" /><span className="font-mono text-[9px] uppercase tracking-[0.12em] text-text-dim">Change policy</span></div><div className="flex rounded-lg border border-white/[0.1] bg-black/10 p-0.5"><button type="button" onClick={() => onApprovalModeChange('confirm_each')} className={`rounded-md px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.1em] transition-colors ${askBeforeChanges ? 'bg-white/[0.1] text-white' : 'text-text-dim hover:text-white'}`}>Ask first</button><button type="button" onClick={() => onApprovalModeChange('allow_workspace_edits')} className={`rounded-md px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.1em] transition-colors ${!askBeforeChanges ? 'bg-emerald-300/[0.13] text-emerald-200' : 'text-text-dim hover:text-white'}`}>Green light</button></div></div>
         {error && <p className="mb-3 rounded-lg border border-rose-300/20 bg-rose-300/[0.07] px-3 py-2 text-xs text-rose-200">{error}</p>}
         <form onSubmit={submit} className="rounded-2xl border border-white/[0.13] bg-white/[0.045] p-2 transition-colors focus-within:border-signal-ice/40 focus-within:bg-white/[0.07]">
-          <div className="flex items-end gap-2"><input ref={fileInputRef} type="file" className="hidden" onChange={(event) => setAttachmentName(event.target.files?.[0]?.name)} /><button type="button" aria-label="Attach a local file" title="Attach a local file" onClick={() => fileInputRef.current?.click()} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-text-dim transition-colors hover:bg-white/[0.07] hover:text-white"><Paperclip size={17} /></button><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submit(event) } }} placeholder="Message Agent Room…" rows={2} className="min-h-[48px] flex-1 resize-none bg-transparent px-1 py-2 text-sm leading-6 text-white outline-none placeholder:text-text-dim" aria-label="Message the agent" /><button type="submit" disabled={loading || !draft.trim()} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-signal-ice text-[#0a1115] transition-all hover:bg-white active:scale-95 disabled:cursor-not-allowed disabled:opacity-30" aria-label="Send message"><ArrowUp size={17} strokeWidth={2.5} /></button></div>
-          {attachmentName && <p className="mx-2 mt-1.5 truncate font-mono text-[9px] uppercase tracking-[0.1em] text-text-dim">Attached locally: {attachmentName}</p>}
+          <div className="flex items-end gap-2"><input ref={fileInputRef} type="file" multiple className="hidden" onChange={(event) => void selectAttachments(event.target.files)} /><button type="button" aria-label="Attach a local file" title="Attach a local file" onClick={() => fileInputRef.current?.click()} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-text-dim transition-colors hover:bg-white/[0.07] hover:text-white"><Paperclip size={17} /></button><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submit(event) } }} placeholder="Message Agent Room…" rows={2} className="min-h-[48px] flex-1 resize-none bg-transparent px-1 py-2 text-sm leading-6 text-white outline-none placeholder:text-text-dim" aria-label="Message the agent" /><button type="submit" disabled={loading || !draft.trim()} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-signal-ice text-[#0a1115] transition-all hover:bg-white active:scale-95 disabled:cursor-not-allowed disabled:opacity-30" aria-label="Send message"><ArrowUp size={17} strokeWidth={2.5} /></button></div>
+          {attachments.length > 0 && <div className="mx-2 mt-1.5 flex flex-wrap gap-1.5">{attachments.map((attachment) => <span key={attachment.name} className="max-w-full truncate rounded-md border border-white/[0.1] bg-white/[0.04] px-2 py-1 font-mono text-[8px] uppercase tracking-[0.08em] text-text-dim">{attachment.unsupported ? 'Local only · ' : 'Shared on send · '}{attachment.name}</span>)}</div>}
         </form>
-        <p className="mt-2 px-1 text-[10px] text-text-dim">Enter to send · Shift + Enter for a new line · Local files stay on this device until a task needs them.</p>
+        <p className="mt-2 px-1 text-[10px] text-text-dim">Enter to send · Shift + Enter for a new line · Text/code excerpts leave this device only when you send the message.</p>
       </div>
     </div>
   </section>
