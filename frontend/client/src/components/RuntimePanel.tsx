@@ -14,7 +14,7 @@ const short = (value?: string | null, size = 8) => value ? `${value.slice(0, siz
 
 export default function RuntimePanel({ devices, episodes, pairing, onPair }: RuntimePanelProps) {
   const online = devices.filter((device) => device.status === 'online').length
-  return <aside className="absolute right-4 top-4 z-20 hidden w-[296px] border border-white/[0.10] bg-[#0b1017]/95 p-3 shadow-2xl backdrop-blur-xl 2xl:block">
+  return <aside className="absolute right-4 top-4 z-20 hidden w-[296px] border border-white/[0.10] bg-[#0b1017]/95 p-3 shadow-2xl backdrop-blur-xl xl:block">
     <div className="flex items-start justify-between gap-3 border-b border-white/[0.08] pb-3">
       <div><p className="font-mono text-[9px] uppercase tracking-[0.16em] text-signal-ice">Hybrid runtime</p><h3 className="mt-1 font-display text-sm font-semibold text-white">PC capabilities</h3></div>
       <span className={`rounded-full border px-2 py-1 font-mono text-[8px] uppercase tracking-[0.1em] ${online ? 'border-complete/30 bg-complete/10 text-complete' : 'border-white/10 text-text-dim'}`}>{online}/{devices.length || 0} online</span>
