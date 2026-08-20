@@ -63,6 +63,7 @@ export interface RunSubmission {
   status: string
   task: string
   mode?: 'chat' | 'project'
+  answer?: string
 }
 
 export interface ChatResponse {

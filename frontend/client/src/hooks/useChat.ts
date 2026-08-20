@@ -159,6 +159,18 @@ export function useChat() {
       if (!response.ok) throw new Error(`Request failed with ${response.status}`)
       const data = await response.json() as RunSubmission & { mode?: 'chat' | 'project' }
       setRunId(data.run_id)
+      if (data.mode === 'chat') {
+        if (data.status === 'completed' && data.answer) {
+          terminalRef.current = true
+          setLoading(false)
+          setMessages((current) => [...current, { id: `assistant-${Date.now()}`, role: 'assistant', content: data.answer!, timestamp: new Date().toISOString(), runId: data.run_id, stage: 'completed' }])
+          return
+        }
+        terminalRef.current = true
+        setLoading(false)
+        setError('The chat model did not return an answer. Please retry in a moment.')
+        return
+      }
       if (data.mode === 'project') {
         setMessages((current) => [...current, { id: `project-${Date.now()}`, role: 'assistant', content: 'Понял. Сначала соберу контекст и уточню важные детали, затем предложу следующий шаг.', timestamp: new Date().toISOString(), runId: data.run_id, stage: 'planning' }])
       }

@@ -531,7 +531,7 @@ async def chat(payload: ChatRequest, request: Request):
         raise HTTPException(status_code=502, detail="The agent run could not be completed.") from exc
 
 
-async def execute_conversation_run(run_id: str, message: str) -> None:
+async def execute_conversation_run(run_id: str, message: str) -> tuple[str, str]:
     """Persist a direct low-cost chat answer through the same durable event stream."""
     store = get_run_store()
 
@@ -555,9 +555,12 @@ async def execute_conversation_run(run_id: str, message: str) -> None:
                 },
             }
         )
+        return "completed", answer
     except Exception:
+        message = "The chat model did not return an answer. Please retry in a moment."
         await store.complete_run(run_id, "failed", "", None)
-        await event_sink({"type": "run.failed", "payload": {"message": "The chat response could not be completed."}})
+        await event_sink({"type": "run.failed", "payload": {"message": message}})
+        return "failed", ""
 
 
 async def execute_project_clarification_run(run_id: str, message: str) -> None:
@@ -603,8 +606,11 @@ async def create_run(payload: ChatRequest, request: Request):
     )
 
     if not project_mode:
-        asyncio.create_task(execute_conversation_run(run_id, payload.message), name=f"conversation-run-{run_id}")
-        return {"run_id": run_id, "status": "queued", "task": payload.message, "mode": "chat"}
+        # A direct conversation is short and read-only. Completing it inside the
+        # request means a lost/reopened SSE connection cannot leave the user
+        # staring at a perpetual activity indicator with no visible answer.
+        status, answer = await execute_conversation_run(run_id, payload.message)
+        return {"run_id": run_id, "status": status, "task": payload.message, "mode": "chat", "answer": answer}
 
     asyncio.create_task(execute_project_clarification_run(run_id, payload.message), name=f"project-clarification-{run_id}")
     return {"run_id": run_id, "status": "queued", "task": payload.message, "mode": "project"}

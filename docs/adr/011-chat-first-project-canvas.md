@@ -10,16 +10,16 @@ The product must instead open into an ordinary, high-quality conversation for a 
 
 ## Decision
 
-Agent Room uses two primary workspaces only: **Chat** and **Project**. Chat opens by default. The header shows the selected project name, while a compact health indicator summarizes Cloud, runtime, Serena, and Graphiti availability. Deep diagnostics stay outside the primary workspaces.
+Agent Room uses one primary desktop scene with three coordinated regions: a persistent **Chat** panel on the left, a **Project canvas** on the right, and a vertical **task lane** at the canvas edge. The header shows the selected project name, while a compact health indicator summarizes Cloud, runtime, Serena, and Graphiti availability. Deep diagnostics stay outside the primary scene.
 
 A deterministic low-cost classifier routes ordinary conversation to a direct `low` complexity OmniRoute model path. This path emits durable events and an answer, but does not create a planner, tool trace, review sequence, or project task. Explicit project-work signals route to a clarification-first path. It returns a shared understanding and only the important missing questions; it does not run tools or claim to modify code before scope is ready.
 
-The Project workspace visualizes tracked project modules and, through a file lens, tracked files. Selecting a module highlights direct dependency edges and opens an in-canvas inspector. Project tasks form a right-side work lane and attach to modules as durable markers. Completed work moves into a collapsed cold archive.
+The Project canvas visualizes tracked project modules and, through a file lens, tracked files beside the ongoing conversation. Selecting a module highlights direct dependency edges and opens an in-canvas inspector. Project tasks form a right-side work lane within the same dashboard and attach to modules as durable markers. Completed work moves into a collapsed cold archive.
 
 | Product surface | Visible to user | Hidden by default |
 |---|---|---|
-| Chat | Messages, code/Markdown output, compact activity line, two change policies, approvals when needed | Model name, token budget, planner events, raw tool traces |
-| Project | Map lenses, dependency focus, file/module inspector, task lane, sticky markers | Runtime transport detail, raw index logs, device protocol payloads |
+| Chat panel | Messages, code/Markdown output, compact activity line, compact `Ask` / `Auto` modes, approvals when needed | Model name, token budget, planner events, raw tool traces |
+| Project canvas | Map lenses, dependency focus, file/module inspector, sticky markers and adjacent task lane | Runtime transport detail, raw index logs, device protocol payloads |
 | Health indicator | Healthy / attention / offline state and concise actionable explanation | Full logs, Docker commands, terminal output |
 | Desktop setup | Source chooser, setup progress, final ready state | Runtime installer console, Serena server process, Graphiti Docker process |
 
