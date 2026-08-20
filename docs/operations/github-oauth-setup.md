@@ -34,3 +34,17 @@ Keep `AUTH_REQUIRED=false` while registering the app and setting the two GitHub 
 
 [1]: https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps "GitHub — Authorizing OAuth apps"
 [2]: https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/scopes-for-oauth-apps "GitHub — OAuth app scopes"
+
+## Smoke-test consent review
+
+The production consent page was reviewed on 20 August 2026. It identifies **Agent Room Beta** as the requesting app and limits access to read-only profile and verified email data. It redirects only to the configured Railway callback URL. The authorization confirmation was explicitly approved by the workspace owner before submission.
+
+The first consent submission attempt did not leave the GitHub authorization page, so no callback or session was created. The visible requested access remained unchanged: read-only profile and email data.
+
+A browser snapshot refresh restored a stable consent button after a stale interaction error. No authorization result or callback had occurred at this checkpoint.
+
+The production smoke test completed successfully. The OAuth callback returned to the Vercel frontend, created a session, and the header rendered the authenticated GitHub identity `VADIMCHUDIN`. The default workspace remained available after the authenticated redirect.
+
+## Production enforcement result
+
+After the owner session was established, `AUTH_REQUIRED=true` was enabled in Railway. A request without a session to `/v1/projects` returned `401`, an unapproved CORS origin was blocked, and a browser refresh retained the authenticated `VADIMCHUDIN` identity and workspace access. The GitHub OAuth/RBAC rollout is therefore active in production.
