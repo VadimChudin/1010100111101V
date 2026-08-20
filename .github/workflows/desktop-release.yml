@@ -78,13 +78,10 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -f desktop-latest "${{ github.sha }}"
           git push --force origin refs/tags/desktop-latest
-      - name: Create or update desktop test release
+      - name: Publish desktop test release at the verified tag target
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view desktop-latest >/dev/null 2>&1; then
-            gh release edit desktop-latest --title "Agent Room Desktop — test latest" --notes "Automated unsigned desktop test channel. Build: ${{ github.sha }}" --prerelease
-          else
-            gh release create desktop-latest --title "Agent Room Desktop — test latest" --notes "Automated unsigned desktop test channel. Build: ${{ github.sha }}" --target "${{ github.sha }}" --prerelease
-          fi
+          gh release delete desktop-latest --yes >/dev/null 2>&1 || true
+          gh release create desktop-latest --title "Agent Room Desktop — test latest" --notes "Automated unsigned desktop test channel. Build: ${{ github.sha }}" --target "${{ github.sha }}" --prerelease
           gh release upload desktop-latest desktop-artifacts/* --clobber

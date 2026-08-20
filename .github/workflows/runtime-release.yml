@@ -35,14 +35,10 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -f runtime-latest "${{ github.sha }}"
           git push --force origin refs/tags/runtime-latest
-      - name: Create or update latest runtime release
+      - name: Publish latest runtime release at the verified tag target
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view runtime-latest >/dev/null 2>&1; then
-            gh release delete-asset runtime-latest agent_room_runtime-latest-py3-none-any.whl runtime-update.json SHA256SUMS --yes || true
-            gh release edit runtime-latest --title "Agent Room Runtime — latest" --notes "Automated verified runtime channel. Build: ${{ github.sha }}"
-          else
-            gh release create runtime-latest --title "Agent Room Runtime — latest" --notes "Automated verified runtime channel. Build: ${{ github.sha }}" --target "${{ github.sha }}"
-          fi
+          gh release delete runtime-latest --yes >/dev/null 2>&1 || true
+          gh release create runtime-latest --title "Agent Room Runtime — latest" --notes "Automated verified runtime channel. Build: ${{ github.sha }}" --target "${{ github.sha }}"
           gh release upload runtime-latest local-runtime/release/agent_room_runtime-latest-py3-none-any.whl local-runtime/release/runtime-update.json local-runtime/release/SHA256SUMS --clobber
