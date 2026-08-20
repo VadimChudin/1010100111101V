@@ -192,3 +192,41 @@ export interface AuthStatus {
   user?: AuthUser
   github_configured: boolean
 }
+
+
+export type DeviceStatus = 'online' | 'offline' | 'revoked'
+
+export interface LocalRepositoryInventory {
+  repository_url: string
+  branch: string
+  commit_sha: string
+  dirty: boolean
+  tracked_files: number
+  workspace_fingerprint: string
+}
+
+export interface ProjectDevice {
+  id: string
+  project_id: string
+  owner_user_id: string
+  name: string
+  status: DeviceStatus
+  runtime_version: string
+  capabilities: string[]
+  inventory?: LocalRepositoryInventory | null
+  last_seen_at?: string | null
+  last_synced_at?: string | null
+  created_at: string
+  revoked_at?: string | null
+}
+
+export interface GraphitiEpisodeEnvelope {
+  episode_id: string
+  group_id: string
+  name: string
+  content: string
+  source: string
+  source_run_id?: string | null
+  source_commit_sha?: string | null
+  occurred_at: string
+}

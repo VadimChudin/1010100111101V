@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-room-runtime"
+version = "0.1.0"
+description = "Local-first Serena and Graphiti companion runtime for Agent Room"
+requires-python = ">=3.11"
+dependencies = [
+  "httpx>=0.27.0",
+]
+
+[project.optional-dependencies]
+graphiti = [
+  "neo4j>=5.25.0",
+  "graphiti-core>=0.17.0",
+]
+test = ["pytest>=8.0", "pytest-asyncio>=0.24.0"]
+
+[project.scripts]
+agent-room-runtime = "agent_room_runtime.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

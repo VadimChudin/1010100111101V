@@ -1,14 +1,27 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { RepositoryFile, RepositoryIndex, WorkspaceModule, WorkspaceSnapshot, WorkspaceTaskStatus } from '../types'
+import type {
+  GraphitiEpisodeEnvelope,
+  ProjectDevice,
+  RepositoryFile,
+  RepositoryIndex,
+  WorkspaceModule,
+  WorkspaceSnapshot,
+  WorkspaceTaskStatus,
+} from '../types'
 
 const apiRoot = () => (import.meta.env.VITE_API_URL || 'https://app-production-cc16.up.railway.app').replace(/\/$/, '')
 
 type WorkspaceRefreshOptions = { indexRepository?: boolean }
 
+type DevicePairing = { pairing_token: string; expires_at: string; name_hint: string }
+
 export function useWorkspace() {
   const [workspace, setWorkspace] = useState<WorkspaceSnapshot>()
   const [repository, setRepository] = useState<RepositoryIndex>()
   const [files, setFiles] = useState<RepositoryFile[]>([])
+  const [devices, setDevices] = useState<ProjectDevice[]>([])
+  const [graphitiEpisodes, setGraphitiEpisodes] = useState<GraphitiEpisodeEnvelope[]>([])
+  const [pairing, setPairing] = useState<DevicePairing>()
   const [selectedModuleId, setSelectedModuleId] = useState<string>()
   const [loading, setLoading] = useState(true)
   const [indexing, setIndexing] = useState(false)
@@ -29,10 +42,12 @@ export function useWorkspace() {
         if (!response.ok) throw new Error('Could not refresh the Git project map')
       }
 
-      const [workspaceResponse, repositoryResponse, filesResponse] = await Promise.all([
+      const [workspaceResponse, repositoryResponse, filesResponse, devicesResponse, episodesResponse] = await Promise.all([
         fetch(`${apiRoot()}/v1/projects/${project.id}/workspace`, { credentials: 'include' }),
         fetch(`${apiRoot()}/v1/projects/${project.id}/repository`, { credentials: 'include' }),
         fetch(`${apiRoot()}/v1/projects/${project.id}/files`, { credentials: 'include' }),
+        fetch(`${apiRoot()}/v1/projects/${project.id}/devices`, { credentials: 'include' }),
+        fetch(`${apiRoot()}/v1/projects/${project.id}/graphiti/episodes`, { credentials: 'include' }),
       ])
       if (!workspaceResponse.ok) throw new Error('Could not load workspace')
       const snapshot = await workspaceResponse.json() as WorkspaceSnapshot
@@ -40,6 +55,8 @@ export function useWorkspace() {
       setSelectedModuleId((current) => current && snapshot.modules.some((module) => module.id === current) ? current : snapshot.modules[0]?.id)
       setRepository(repositoryResponse.ok ? await repositoryResponse.json() as RepositoryIndex : undefined)
       setFiles(filesResponse.ok ? await filesResponse.json() as RepositoryFile[] : [])
+      setDevices(devicesResponse.ok ? await devicesResponse.json() as ProjectDevice[] : [])
+      setGraphitiEpisodes(episodesResponse.ok ? await episodesResponse.json() as GraphitiEpisodeEnvelope[] : [])
       setError(undefined)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load workspace')
@@ -53,6 +70,17 @@ export function useWorkspace() {
 
   const selectedModule = workspace?.modules.find((module) => module.id === selectedModuleId)
   const indexRepository = useCallback(async () => { await refresh({ indexRepository: true }) }, [refresh])
+
+  const createDevicePairing = useCallback(async (nameHint = 'Local Agent Room Runtime') => {
+    if (!workspace) throw new Error('Workspace is not ready')
+    const response = await fetch(`${apiRoot()}/v1/projects/${workspace.project.id}/devices/pair`, {
+      method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name_hint: nameHint }),
+    })
+    if (!response.ok) throw new Error('Could not create a device pairing token')
+    const nextPairing = await response.json() as DevicePairing
+    setPairing(nextPairing)
+    return nextPairing
+  }, [workspace])
 
   const createNote = useCallback(async (module: WorkspaceModule, title: string, content: string, sourceRunId?: string) => {
     if (!workspace) return
@@ -81,5 +109,8 @@ export function useWorkspace() {
     await refresh()
   }, [refresh, workspace])
 
-  return { workspace, repository, files, selectedModule, selectedModuleId, setSelectedModuleId, loading, indexing, error, refresh, indexRepository, createNote, createTask, updateTaskStatus }
+  return {
+    workspace, repository, files, devices, graphitiEpisodes, pairing, selectedModule, selectedModuleId, setSelectedModuleId,
+    loading, indexing, error, refresh, indexRepository, createDevicePairing, createNote, createTask, updateTaskStatus,
+  }
 }

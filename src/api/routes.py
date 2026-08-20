@@ -25,9 +25,18 @@ from src.storage import get_run_store
 from src.tools.gateway import ToolGateway
 from src.tools.serena import SerenaClient
 from src.workspace import (
+    DevicePairing,
+    DevicePairingRequest,
+    DeviceRegistration,
+    DeviceRegistrationRequest,
+    DeviceSyncRequest,
+    DeviceSyncResponse,
+    GraphitiEpisodeEnvelope,
     ModuleCreateRequest,
     NoteCreateRequest,
     ProjectCreateRequest,
+    ProjectDevice,
+    ProjectEventType,
     RepositoryFile,
     RepositoryIndex,
     TaskCreateRequest,
@@ -216,6 +225,67 @@ async def index_project_repository(project_id: str, request: Request):
         raise HTTPException(status_code=503, detail="Repository index is unavailable") from exc
 
 
+@router.post("/projects/{project_id}/devices/pair", response_model=DevicePairing, status_code=201)
+async def create_device_pairing(project_id: str, payload: DevicePairingRequest, request: Request):
+    user = await require_project_access(request, project_id, ProjectRole.OWNER)
+    try:
+        return await workspace_store().create_device_pairing(project_id, user.id, payload)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
+
+
+@router.post("/projects/{project_id}/devices/register", response_model=DeviceRegistration, status_code=201)
+async def register_project_device(project_id: str, payload: DeviceRegistrationRequest):
+    try:
+        return await workspace_store().register_device(project_id, payload)
+    except PermissionError as exc:
+        raise HTTPException(status_code=401, detail="Pairing token is invalid or expired") from exc
+
+
+@router.get("/projects/{project_id}/devices", response_model=list[ProjectDevice])
+async def get_project_devices(project_id: str, request: Request):
+    await require_project_access(request, project_id)
+    return await workspace_store().list_devices(project_id)
+
+
+async def require_registered_device(project_id: str, device_id: str, device_token: str) -> ProjectDevice:
+    device = await workspace_store().authenticate_device(project_id, device_token)
+    if device is None or device.id != device_id:
+        raise HTTPException(status_code=401, detail="Device authentication failed")
+    return device
+
+
+@router.post("/projects/{project_id}/devices/{device_id}/sync", response_model=DeviceSyncResponse)
+async def sync_project_device(
+    project_id: str,
+    device_id: str,
+    payload: DeviceSyncRequest,
+    x_device_token: str | None = Header(default=None, alias="X-Device-Token"),
+):
+    if not x_device_token:
+        raise HTTPException(status_code=401, detail="Device authentication is required")
+    await require_registered_device(project_id, device_id, x_device_token)
+    try:
+        return await workspace_store().sync_device(project_id, device_id, payload)
+    except PermissionError as exc:
+        raise HTTPException(status_code=401, detail="Device authentication failed") from exc
+
+
+@router.post("/projects/{project_id}/graphiti/episodes", status_code=202)
+async def record_graphiti_episode(project_id: str, payload: GraphitiEpisodeEnvelope, request: Request):
+    user = await require_project_access(request, project_id, ProjectRole.EDITOR)
+    event = await workspace_store().record_cloud_event(
+        project_id, user.id, ProjectEventType.GRAPHITI_EPISODE, payload.episode_id, payload.model_dump(), payload.occurred_at
+    )
+    return {"sequence": event.sequence, "episode_id": payload.episode_id}
+
+
+@router.get("/projects/{project_id}/graphiti/episodes", response_model=list[GraphitiEpisodeEnvelope])
+async def get_graphiti_episodes(project_id: str, request: Request, limit: int = 50):
+    await require_project_access(request, project_id)
+    return await workspace_store().graphiti_episodes(project_id, min(max(limit, 1), 100))
+
+
 @router.post("/projects/{project_id}/modules", response_model=WorkspaceModule, status_code=201)
 async def create_module(project_id: str, payload: ModuleCreateRequest, request: Request):
     await require_project_access(request, project_id, ProjectRole.EDITOR)
@@ -229,27 +299,34 @@ async def create_module(project_id: str, payload: ModuleCreateRequest, request: 
 async def create_note(project_id: str, payload: NoteCreateRequest, request: Request):
     user = await require_project_access(request, project_id, ProjectRole.EDITOR)
     try:
-        return await workspace_store().create_note(project_id, payload, author=user.login)
+        note = await workspace_store().create_note(project_id, payload, author=user.login)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="Module not found in project") from exc
+    await workspace_store().record_cloud_event(
+        project_id, user.id, ProjectEventType.NOTE_CREATED, note.id, {**payload.model_dump(mode="json"), "author": user.login}, note.created_at
+    )
+    return note
 
 
 @router.post("/projects/{project_id}/tasks", response_model=WorkspaceTask, status_code=201)
 async def create_workspace_task(project_id: str, payload: TaskCreateRequest, request: Request):
-    await require_project_access(request, project_id, ProjectRole.EDITOR)
+    user = await require_project_access(request, project_id, ProjectRole.EDITOR)
     try:
-        return await workspace_store().create_task(project_id, payload)
+        task = await workspace_store().create_task(project_id, payload)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="Module not found in project") from exc
+    await workspace_store().record_cloud_event(project_id, user.id, ProjectEventType.TASK_CREATED, task.id, payload.model_dump(mode="json"), task.created_at)
+    return task
 
 
 @router.patch("/projects/{project_id}/tasks/{task_id}", response_model=WorkspaceTask)
 async def update_workspace_task(project_id: str, task_id: str, payload: TaskStatusRequest, request: Request):
-    await require_project_access(request, project_id, ProjectRole.EDITOR)
+    user = await require_project_access(request, project_id, ProjectRole.EDITOR)
     store = workspace_store()
     task = await store.set_task_status(task_id, payload.status)
     if task is None or task.project_id != project_id:
         raise HTTPException(status_code=404, detail="Task not found")
+    await store.record_cloud_event(project_id, user.id, ProjectEventType.TASK_STATUS_CHANGED, task_id, payload.model_dump(mode="json"), task.updated_at)
     return task
 
 @router.post("/chat", response_model=ChatRunResponse)

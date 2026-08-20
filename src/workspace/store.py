@@ -7,21 +7,36 @@ import re
 import sqlite3
 import subprocess
 import tomllib
+import secrets
 from collections.abc import Callable, Iterable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from src.storage import SQLiteRunStore
 
 from .models import (
+    DevicePairing,
+    DevicePairingRequest,
+    DeviceRegistration,
+    DeviceRegistrationRequest,
+    DeviceStatus,
+    DeviceSyncRequest,
+    DeviceSyncResponse,
+    GraphitiEpisodeEnvelope,
+    LocalRepositoryInventory,
     MarkerType,
     ModuleCreateRequest,
     NoteCreateRequest,
     ProjectCreateRequest,
+    ProjectDevice,
+    ProjectEvent,
+    ProjectEventMutation,
+    ProjectEventType,
     RepositoryDependency,
     RepositoryFile,
     RepositoryIndex,
+    SyncConflict,
     TaskCreateRequest,
     TaskStatus,
     WorkspaceMarker,
@@ -122,6 +137,70 @@ CREATE INDEX IF NOT EXISTS idx_notes_project_module ON notes(project_id, module_
 CREATE INDEX IF NOT EXISTS idx_workspace_tasks_project_module ON workspace_tasks(project_id, module_id);
 CREATE INDEX IF NOT EXISTS idx_markers_project_module ON module_markers(project_id, module_id);
 CREATE INDEX IF NOT EXISTS idx_repository_files_project ON repository_files(project_id, kind, path);
+
+CREATE TABLE IF NOT EXISTS project_devices (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    owner_user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    device_token_hash TEXT NOT NULL UNIQUE,
+    public_key TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'offline',
+    runtime_version TEXT NOT NULL,
+    capabilities_json TEXT NOT NULL DEFAULT '[]',
+    inventory_json TEXT NOT NULL DEFAULT '{}',
+    last_seen_at TEXT,
+    last_synced_at TEXT,
+    created_at TEXT NOT NULL,
+    revoked_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS device_pairings (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    owner_user_id TEXT NOT NULL,
+    name_hint TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS project_events (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    event_id TEXT NOT NULL,
+    device_id TEXT REFERENCES project_devices(id) ON DELETE SET NULL,
+    actor_id TEXT,
+    type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    base_revision INTEGER NOT NULL DEFAULT 0,
+    entity_revision INTEGER NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    occurred_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(project_id, event_id)
+);
+
+CREATE TABLE IF NOT EXISTS project_entity_revisions (
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    entity_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    PRIMARY KEY(project_id, entity_id)
+);
+
+CREATE TABLE IF NOT EXISTS graphiti_episode_envelopes (
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    episode_id TEXT NOT NULL,
+    device_id TEXT REFERENCES project_devices(id) ON DELETE SET NULL,
+    envelope_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(project_id, episode_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_devices_project ON project_devices(project_id, status);
+CREATE INDEX IF NOT EXISTS idx_project_events_project_sequence ON project_events(project_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_device_pairings_token ON device_pairings(token_hash);
 """
 
 LEGACY_DEFAULT_SCOPES = {
@@ -611,6 +690,241 @@ class WorkspaceStore:
     async def snapshot(self, project_id: str) -> WorkspaceSnapshot | None:
         await self.initialize()
         return await asyncio.to_thread(self._snapshot_sync, project_id)
+
+    @staticmethod
+    def _token_hash(token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _inventory_from_row(row: sqlite3.Row) -> LocalRepositoryInventory | None:
+        raw = str(row["inventory_json"] or "")
+        if not raw:
+            return None
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return LocalRepositoryInventory.model_validate(payload) if payload else None
+
+    @classmethod
+    def _device(cls, row: sqlite3.Row) -> ProjectDevice:
+        return ProjectDevice(
+            id=row["id"], project_id=row["project_id"], owner_user_id=row["owner_user_id"], name=row["name"],
+            status=DeviceStatus(row["status"]), runtime_version=row["runtime_version"], capabilities=json.loads(row["capabilities_json"]),
+            inventory=cls._inventory_from_row(row), last_seen_at=row["last_seen_at"], last_synced_at=row["last_synced_at"],
+            created_at=row["created_at"], revoked_at=row["revoked_at"],
+        )
+
+    @staticmethod
+    def _event(row: sqlite3.Row) -> ProjectEvent:
+        return ProjectEvent(
+            sequence=int(row["sequence"]), project_id=row["project_id"], event_id=row["event_id"], device_id=row["device_id"],
+            actor_id=row["actor_id"], type=ProjectEventType(row["type"]), entity_id=row["entity_id"], base_revision=int(row["base_revision"]),
+            entity_revision=int(row["entity_revision"]), payload=json.loads(row["payload_json"]), occurred_at=row["occurred_at"], created_at=row["created_at"],
+        )
+
+    def _create_device_pairing_sync(self, project_id: str, owner_user_id: str, request: DevicePairingRequest) -> DevicePairing:
+        timestamp = now()
+        token = secrets.token_urlsafe(32)
+        expires_at = (datetime.now(UTC) + timedelta(seconds=request.expires_in_seconds)).isoformat()
+        pairing = DevicePairing(id=new_id(), project_id=project_id, name_hint=request.name_hint, pairing_token=token, expires_at=expires_at)
+        with self._connect() as connection:
+            if connection.execute("SELECT 1 FROM projects WHERE id = ?", (project_id,)).fetchone() is None:
+                raise LookupError("Project not found")
+            connection.execute(
+                "INSERT INTO device_pairings (id, project_id, owner_user_id, name_hint, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (pairing.id, project_id, owner_user_id, request.name_hint, self._token_hash(token), expires_at, timestamp),
+            )
+        return pairing
+
+    async def create_device_pairing(self, project_id: str, owner_user_id: str, request: DevicePairingRequest) -> DevicePairing:
+        await self.initialize()
+        return await asyncio.to_thread(self._create_device_pairing_sync, project_id, owner_user_id, request)
+
+    def _register_device_sync(self, project_id: str, request: DeviceRegistrationRequest) -> DeviceRegistration:
+        token_hash = self._token_hash(request.pairing_token)
+        timestamp = now()
+        device_token = secrets.token_urlsafe(48)
+        device_id = new_id()
+        with self._connect() as connection:
+            pairing = connection.execute(
+                "SELECT * FROM device_pairings WHERE project_id = ? AND token_hash = ? AND consumed_at IS NULL", (project_id, token_hash)
+            ).fetchone()
+            if pairing is None:
+                raise PermissionError("Pairing token is invalid or already consumed")
+            try:
+                expires_at = datetime.fromisoformat(str(pairing["expires_at"]).replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise PermissionError("Pairing token is invalid") from exc
+            if expires_at <= datetime.now(UTC):
+                raise PermissionError("Pairing token has expired")
+            inventory_json = json.dumps(request.inventory.model_dump()) if request.inventory is not None else ""
+            connection.execute(
+                "INSERT INTO project_devices (id, project_id, owner_user_id, name, device_token_hash, public_key, status, runtime_version, capabilities_json, inventory_json, last_seen_at, last_synced_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (device_id, project_id, pairing["owner_user_id"], request.name, self._token_hash(device_token), request.public_key, DeviceStatus.ONLINE, request.runtime_version, json.dumps(sorted(set(request.capabilities))), inventory_json, timestamp, timestamp, timestamp),
+            )
+            connection.execute("UPDATE device_pairings SET consumed_at = ? WHERE id = ?", (timestamp, pairing["id"]))
+            row = connection.execute("SELECT * FROM project_devices WHERE id = ?", (device_id,)).fetchone()
+        return DeviceRegistration(**self._device(row).model_dump(), device_token=device_token)
+
+    async def register_device(self, project_id: str, request: DeviceRegistrationRequest) -> DeviceRegistration:
+        await self.initialize()
+        return await asyncio.to_thread(self._register_device_sync, project_id, request)
+
+    def _list_devices_sync(self, project_id: str) -> list[ProjectDevice]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT * FROM project_devices WHERE project_id = ? ORDER BY created_at DESC", (project_id,)).fetchall()
+        return [self._device(row) for row in rows]
+
+    async def list_devices(self, project_id: str) -> list[ProjectDevice]:
+        await self.initialize()
+        return await asyncio.to_thread(self._list_devices_sync, project_id)
+
+    def _authenticate_device_sync(self, project_id: str, device_token: str) -> ProjectDevice | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM project_devices WHERE project_id = ? AND device_token_hash = ?", (project_id, self._token_hash(device_token))
+            ).fetchone()
+        if row is None or row["status"] == DeviceStatus.REVOKED:
+            return None
+        return self._device(row)
+
+    async def authenticate_device(self, project_id: str, device_token: str) -> ProjectDevice | None:
+        await self.initialize()
+        return await asyncio.to_thread(self._authenticate_device_sync, project_id, device_token)
+
+    def _apply_remote_projection(self, connection: sqlite3.Connection, project_id: str, event: ProjectEventMutation) -> None:
+        payload = event.payload
+        if event.type == ProjectEventType.NOTE_CREATED:
+            request = NoteCreateRequest.model_validate(payload)
+            if not self._module_belongs_to_project(connection, project_id, request.module_id):
+                raise LookupError("Module not found in project")
+            connection.execute(
+                "INSERT INTO notes (id, project_id, module_id, title, content, kind, author, source_run_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (event.entity_id, project_id, request.module_id, request.title, request.content, request.kind, str(payload.get("author", "local-runtime")), request.source_run_id, event.occurred_at),
+            )
+            connection.execute(
+                "INSERT INTO module_markers (id, project_id, module_id, type, title, state, source_kind, source_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (new_id(), project_id, request.module_id, request.kind, request.title, "open", "note", event.entity_id, event.occurred_at),
+            )
+        elif event.type == ProjectEventType.TASK_CREATED:
+            request = TaskCreateRequest.model_validate(payload)
+            if not self._module_belongs_to_project(connection, project_id, request.module_id):
+                raise LookupError("Module not found in project")
+            connection.execute(
+                "INSERT INTO workspace_tasks (id, project_id, module_id, title, description, acceptance_criteria_json, status, priority, source_run_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (event.entity_id, project_id, request.module_id, request.title, request.description, json.dumps(request.acceptance_criteria), TaskStatus.TODO, request.priority, request.source_run_id, event.occurred_at, event.occurred_at),
+            )
+            connection.execute(
+                "INSERT INTO module_markers (id, project_id, module_id, type, title, state, source_kind, source_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (new_id(), project_id, request.module_id, MarkerType.TASK, request.title, "open", "task", event.entity_id, event.occurred_at),
+            )
+        elif event.type == ProjectEventType.TASK_STATUS_CHANGED:
+            status = TaskStatus(str(payload.get("status", "")))
+            cursor = connection.execute("UPDATE workspace_tasks SET status = ?, updated_at = ? WHERE id = ? AND project_id = ?", (status, event.occurred_at, event.entity_id, project_id))
+            if cursor.rowcount != 1:
+                raise LookupError("Task not found in project")
+        elif event.type == ProjectEventType.MARKER_CREATED:
+            marker = WorkspaceMarker.model_validate({"id": event.entity_id, "project_id": project_id, **payload, "created_at": event.occurred_at})
+            if not self._module_belongs_to_project(connection, project_id, marker.module_id):
+                raise LookupError("Module not found in project")
+            connection.execute(
+                "INSERT INTO module_markers (id, project_id, module_id, type, title, state, source_kind, source_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (marker.id, project_id, marker.module_id, marker.type, marker.title, marker.state, marker.source_kind, marker.source_id, marker.created_at),
+            )
+        elif event.type == ProjectEventType.GRAPHITI_EPISODE:
+            envelope = GraphitiEpisodeEnvelope.model_validate(payload)
+            connection.execute(
+                "INSERT INTO graphiti_episode_envelopes (project_id, episode_id, device_id, envelope_json, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(project_id, episode_id) DO NOTHING",
+                (project_id, envelope.episode_id, None, json.dumps(envelope.model_dump()), now()),
+            )
+
+    def _sync_device_sync(self, project_id: str, device_id: str, request: DeviceSyncRequest) -> DeviceSyncResponse:
+        timestamp = now()
+        accepted: list[str] = []
+        conflicts: list[SyncConflict] = []
+        with self._connect() as connection:
+            device = connection.execute("SELECT * FROM project_devices WHERE id = ? AND project_id = ?", (device_id, project_id)).fetchone()
+            if device is None or device["status"] == DeviceStatus.REVOKED:
+                raise PermissionError("Device is not authorized")
+            inventory_json = json.dumps(request.inventory.model_dump()) if request.inventory is not None else device["inventory_json"]
+            connection.execute(
+                "UPDATE project_devices SET status = ?, inventory_json = ?, last_seen_at = ? WHERE id = ?", (DeviceStatus.ONLINE, inventory_json, timestamp, device_id)
+            )
+            for mutation in request.events:
+                existing = connection.execute("SELECT sequence FROM project_events WHERE project_id = ? AND event_id = ?", (project_id, mutation.event_id)).fetchone()
+                if existing is not None:
+                    accepted.append(mutation.event_id)
+                    continue
+                revision_row = connection.execute("SELECT revision FROM project_entity_revisions WHERE project_id = ? AND entity_id = ?", (project_id, mutation.entity_id)).fetchone()
+                current_revision = int(revision_row["revision"]) if revision_row is not None else 0
+                if mutation.base_revision != current_revision:
+                    conflicts.append(SyncConflict(event_id=mutation.event_id, code="revision_conflict", detail="The entity changed while this device was offline", entity_id=mutation.entity_id, current_revision=current_revision))
+                    continue
+                try:
+                    self._apply_remote_projection(connection, project_id, mutation)
+                except (LookupError, ValueError) as exc:
+                    conflicts.append(SyncConflict(event_id=mutation.event_id, code="projection_rejected", detail=str(exc), entity_id=mutation.entity_id, current_revision=current_revision))
+                    continue
+                next_revision = current_revision + 1
+                connection.execute(
+                    "INSERT INTO project_entity_revisions (project_id, entity_id, revision) VALUES (?, ?, ?) ON CONFLICT(project_id, entity_id) DO UPDATE SET revision = excluded.revision",
+                    (project_id, mutation.entity_id, next_revision),
+                )
+                connection.execute(
+                    "INSERT INTO project_events (project_id, event_id, device_id, actor_id, type, entity_id, base_revision, entity_revision, payload_json, occurred_at, created_at) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)",
+                    (project_id, mutation.event_id, device_id, mutation.type, mutation.entity_id, mutation.base_revision, next_revision, json.dumps(mutation.payload), mutation.occurred_at, timestamp),
+                )
+                accepted.append(mutation.event_id)
+            events = connection.execute("SELECT * FROM project_events WHERE project_id = ? AND sequence > ? ORDER BY sequence LIMIT 500", (project_id, request.cursor)).fetchall()
+            cursor_row = connection.execute("SELECT COALESCE(MAX(sequence), 0) AS cursor FROM project_events WHERE project_id = ?", (project_id,)).fetchone()
+            server_cursor = int(cursor_row["cursor"])
+            connection.execute("UPDATE project_devices SET last_synced_at = ? WHERE id = ?", (timestamp, device_id))
+            updated_device = connection.execute("SELECT * FROM project_devices WHERE id = ?", (device_id,)).fetchone()
+        return DeviceSyncResponse(accepted_event_ids=accepted, conflicts=conflicts, events=[self._event(row) for row in events], server_cursor=server_cursor, device=self._device(updated_device))
+
+    async def sync_device(self, project_id: str, device_id: str, request: DeviceSyncRequest) -> DeviceSyncResponse:
+        await self.initialize()
+        return await asyncio.to_thread(self._sync_device_sync, project_id, device_id, request)
+
+    def _record_cloud_event_sync(self, project_id: str, actor_id: str | None, event_type: ProjectEventType, entity_id: str, payload: dict[str, Any], occurred_at: str | None = None) -> ProjectEvent:
+        timestamp = now()
+        with self._connect() as connection:
+            revision_row = connection.execute("SELECT revision FROM project_entity_revisions WHERE project_id = ? AND entity_id = ?", (project_id, entity_id)).fetchone()
+            base_revision = int(revision_row["revision"]) if revision_row is not None else 0
+            entity_revision = base_revision + 1
+            connection.execute(
+                "INSERT INTO project_entity_revisions (project_id, entity_id, revision) VALUES (?, ?, ?) ON CONFLICT(project_id, entity_id) DO UPDATE SET revision = excluded.revision",
+                (project_id, entity_id, entity_revision),
+            )
+            event_timestamp = occurred_at or timestamp
+            if event_type == ProjectEventType.GRAPHITI_EPISODE:
+                envelope = GraphitiEpisodeEnvelope.model_validate(payload)
+                connection.execute(
+                    "INSERT INTO graphiti_episode_envelopes (project_id, episode_id, device_id, envelope_json, created_at) VALUES (?, ?, NULL, ?, ?) ON CONFLICT(project_id, episode_id) DO NOTHING",
+                    (project_id, envelope.episode_id, json.dumps(envelope.model_dump()), timestamp),
+                )
+            cursor = connection.execute(
+                "INSERT INTO project_events (project_id, event_id, device_id, actor_id, type, entity_id, base_revision, entity_revision, payload_json, occurred_at, created_at) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (project_id, new_id(), actor_id, event_type, entity_id, base_revision, entity_revision, json.dumps(payload), event_timestamp, timestamp),
+            )
+            row = connection.execute("SELECT * FROM project_events WHERE sequence = ?", (cursor.lastrowid,)).fetchone()
+        return self._event(row)
+
+    async def record_cloud_event(self, project_id: str, actor_id: str | None, event_type: ProjectEventType, entity_id: str, payload: dict[str, Any], occurred_at: str | None = None) -> ProjectEvent:
+        await self.initialize()
+        return await asyncio.to_thread(self._record_cloud_event_sync, project_id, actor_id, event_type, entity_id, payload, occurred_at)
+
+    def _graphiti_episodes_sync(self, project_id: str, limit: int = 100) -> list[GraphitiEpisodeEnvelope]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT envelope_json FROM graphiti_episode_envelopes WHERE project_id = ? ORDER BY created_at DESC LIMIT ?", (project_id, limit)
+            ).fetchall()
+        return [GraphitiEpisodeEnvelope.model_validate(json.loads(row["envelope_json"])) for row in rows]
+
+    async def graphiti_episodes(self, project_id: str, limit: int = 100) -> list[GraphitiEpisodeEnvelope]:
+        await self.initialize()
+        return await asyncio.to_thread(self._graphiti_episodes_sync, project_id, limit)
 
 
 _store: WorkspaceStore | None = None
