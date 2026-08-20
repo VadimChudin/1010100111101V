@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     openrouter_app_name: str = "AI Agent Platform"
     default_model: str = "qwen/qwen-2-7b-instruct:free"
     request_timeout_s: float = 60.0
+    openrouter_attempt_timeout_s: float = 20.0
+    openrouter_max_fallback_models: int = 3
     redis_url: str = "redis://localhost:6379/0"
     neo4j_uri: str = "neo4j://localhost:7687"
     neo4j_user: str = "neo4j"
@@ -32,6 +34,7 @@ class Settings(BaseSettings):
     worker_max_attempts: int = 3
     worker_shutdown_grace_seconds: int = 30
     worker_recovery_batch_size: int = 50
+    worker_recovery_interval_seconds: int = 30
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore", case_sensitive=False)
 
 @lru_cache

@@ -33,7 +33,7 @@ class OmniRoute:
         if not self.settings.openrouter_api_key:
             raise RuntimeError("OPENROUTER_API_KEY is not configured")
         preferred = get_model_for_complexity(request.complexity).name
-        ordered = [preferred] + [m.name for m in FREE_MODELS if m.name != preferred]
+        ordered = ([preferred] + [m.name for m in FREE_MODELS if m.name != preferred])[: self.settings.openrouter_max_fallback_models]
         last_error: Exception | None = None
         for index, model in enumerate(ordered):
             started = time.perf_counter()
@@ -52,6 +52,7 @@ class OmniRoute:
                         "temperature": request.temperature,
                         "max_tokens": request.max_tokens,
                     },
+                    timeout=self.settings.openrouter_attempt_timeout_s,
                 )
                 response.raise_for_status()
                 data = response.json()

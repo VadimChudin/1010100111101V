@@ -220,13 +220,13 @@ class SQLiteRunStore:
         await self.initialize()
         return await asyncio.to_thread(self._release_for_retry_sync, run_id, error, max_attempts)
 
-    def _recover_runs_sync(self, max_attempts: int, limit: int) -> RecoveryResult:
+    def _recover_runs_sync(self, max_attempts: int, limit: int, include_queued: bool) -> RecoveryResult:
         now = utc_now()
+        stale_clause = "(status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at <= ?))"
+        queued_clause = "status = 'queued' OR " if include_queued else ""
+        query = f"SELECT * FROM runs WHERE {queued_clause}{stale_clause} ORDER BY updated_at LIMIT ?"
         with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT * FROM runs WHERE status = 'queued' OR (status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at <= ?)) ORDER BY updated_at LIMIT ?",
-                (now, limit),
-            ).fetchall()
+            rows = connection.execute(query, (now, limit)).fetchall()
             queued: list[PersistedRun] = []
             exhausted: list[PersistedRun] = []
             for row in rows:
@@ -240,9 +240,9 @@ class SQLiteRunStore:
                 queued.append(run)
         return RecoveryResult(queued=queued, exhausted=exhausted)
 
-    async def recover_runs(self, max_attempts: int, limit: int) -> RecoveryResult:
+    async def recover_runs(self, max_attempts: int, limit: int, include_queued: bool = True) -> RecoveryResult:
         await self.initialize()
-        return await asyncio.to_thread(self._recover_runs_sync, max_attempts, limit)
+        return await asyncio.to_thread(self._recover_runs_sync, max_attempts, limit, include_queued)
 
     def _set_status_sync(self, run_id: str, status: str) -> None:
         with self._connect() as connection:

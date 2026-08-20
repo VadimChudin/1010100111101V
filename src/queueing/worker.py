@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable
 
 from src.config import get_settings
@@ -41,8 +42,8 @@ class RunWorker:
                 if not renewed:
                     return
 
-    async def recover(self) -> None:
-        recovery = await self.store.recover_runs(self.settings.worker_max_attempts, self.settings.worker_recovery_batch_size)
+    async def recover(self, include_queued: bool = True) -> None:
+        recovery = await self.store.recover_runs(self.settings.worker_max_attempts, self.settings.worker_recovery_batch_size, include_queued=include_queued)
         for run in recovery.exhausted:
             metrics.record_worker("lease_exhausted")
             await self._persist_and_notify(run.id, {"type": "run.failed", "payload": {"message": "Run recovery exceeded its retry limit."}})
@@ -98,9 +99,13 @@ class RunWorker:
                 pass
 
     async def serve(self, shutdown_requested: Callable[[], bool] | None = None) -> None:
-        await self.recover()
+        await self.recover(include_queued=True)
+        last_recovery = time.monotonic()
         while not self._stop.is_set() and (shutdown_requested is None or not shutdown_requested()):
-            job = await self.queue.dequeue()
+            if time.monotonic() - last_recovery >= self.settings.worker_recovery_interval_seconds:
+                await self.recover(include_queued=False)
+                last_recovery = time.monotonic()
+            job = await self.queue.dequeue(timeout_s=min(5, self.settings.worker_recovery_interval_seconds))
             if job is not None:
                 await self.execute(job)
 
