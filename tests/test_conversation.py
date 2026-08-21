@@ -53,3 +53,29 @@ async def test_direct_conversation_persists_a_terminal_answer(monkeypatch, tmp_p
     assert persisted.status == "completed"
     assert persisted.answer == "Hello from the direct path."
     assert any(event["type"] == "run.completed" for event in await store.get_events("run-1"))
+
+
+@pytest.mark.asyncio
+async def test_direct_conversation_preserves_a_safe_provider_failure(monkeypatch, tmp_path):
+    from src.api import routes
+    from src.omniroute.router import OpenRouterUnavailableError
+    from src.storage.run_store import SQLiteRunStore
+
+    store = SQLiteRunStore(str(tmp_path / "runs.db"))
+    await store.create_run("run-provider-failure", "user-1", "hello")
+
+    async def unavailable_conversation(message: str, run_id: str, event_sink):
+        raise OpenRouterUnavailableError("not_configured", "Agent Room is connected, but its OpenRouter key is not configured.")
+
+    monkeypatch.setattr(routes, "get_run_store", lambda: store)
+    monkeypatch.setattr(routes, "run_conversation", unavailable_conversation)
+
+    status, answer = await routes.execute_conversation_run("run-provider-failure", "hello")
+
+    persisted = await store.get_run("run-provider-failure")
+    assert status == "failed"
+    assert "OpenRouter key is not configured" in answer
+    assert persisted is not None
+    assert persisted.answer == answer
+    events = await store.get_events("run-provider-failure")
+    assert events[-1]["payload"]["provider_code"] == "not_configured"

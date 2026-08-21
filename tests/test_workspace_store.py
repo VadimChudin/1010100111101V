@@ -31,7 +31,7 @@ def create_repository(path: Path) -> Path:
     path.mkdir()
     (path / "src" / "api").mkdir(parents=True)
     (path / "frontend" / "client" / "src" / "components").mkdir(parents=True)
-    (path / "src" / "api" / "main.py").write_text("from src.api import routes\n", encoding="utf-8")
+    (path / "src" / "api" / "main.py").write_text("from src.api.routes import health\n", encoding="utf-8")
     (path / "src" / "api" / "routes.py").write_text("def health():\n    return 'ok'\n", encoding="utf-8")
     (path / "frontend" / "client" / "src" / "components" / "App.tsx").write_text("export const App = () => <main />\n", encoding="utf-8")
     (path / "pyproject.toml").write_text(
@@ -77,6 +77,7 @@ async def test_workspace_indexes_git_tracked_files_dependencies_and_modules(tmp_
     assert {item.path for item in files if item.kind == "file"} >= {"src/api/main.py", "src/api/routes.py", "pyproject.toml", "frontend/package.json"}
     assert {dependency.name for dependency in index.dependencies} >= {"fastapi", "httpx", "react", "typescript"}
     assert {dependency.version for dependency in index.dependencies if dependency.name == "fastapi"} == {">=0.115"}
+    assert {(edge.source_path, edge.target_path) for edge in index.file_dependencies} >= {("src/api/main.py", "src/api/routes.py")}
     assert snapshot is not None
     assert {module.source_scope for module in snapshot.modules} == {"src/api", "frontend/client/src/components"}
     assert all(module.origin == "git" for module in snapshot.modules)
@@ -138,6 +139,7 @@ async def test_workspace_repository_api_returns_index_and_files(monkeypatch, tmp
     assert indexed.json()["files_count"] == 5
     assert repository_response.status_code == 200
     assert repository_response.json()["commit_sha"] == indexed.json()["commit_sha"]
+    assert {tuple((edge["source_path"], edge["target_path"])) for edge in repository_response.json()["file_dependencies"]} >= {("src/api/main.py", "src/api/routes.py")}
     assert files.status_code == 200
     assert any(item["path"] == "src/api/main.py" and item["language"] == "Python" for item in files.json())
 

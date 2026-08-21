@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import posixpath
 import re
 import sqlite3
 import subprocess
@@ -46,6 +47,7 @@ from .models import (
     ProjectEventType,
     RepositoryDependency,
     RepositoryFile,
+    RepositoryFileDependency,
     RepositoryIndex,
     SyncConflict,
     TaskCreateRequest,
@@ -148,6 +150,15 @@ CREATE INDEX IF NOT EXISTS idx_notes_project_module ON notes(project_id, module_
 CREATE INDEX IF NOT EXISTS idx_workspace_tasks_project_module ON workspace_tasks(project_id, module_id);
 CREATE INDEX IF NOT EXISTS idx_markers_project_module ON module_markers(project_id, module_id);
 CREATE INDEX IF NOT EXISTS idx_repository_files_project ON repository_files(project_id, kind, path);
+
+CREATE TABLE IF NOT EXISTS repository_file_dependencies (
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    source_path TEXT NOT NULL,
+    target_path TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'import',
+    PRIMARY KEY (project_id, source_path, target_path, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_repository_file_dependencies_source ON repository_file_dependencies(project_id, source_path);
 
 CREATE TABLE IF NOT EXISTS project_devices (
     id TEXT PRIMARY KEY,
@@ -399,12 +410,12 @@ class WorkspaceStore:
             source_kind=row["source_kind"], source_id=row["source_id"], created_at=row["created_at"],
         )
 
-    @staticmethod
-    def _repository_index(row: sqlite3.Row) -> RepositoryIndex:
+    def _repository_index(self, row: sqlite3.Row) -> RepositoryIndex:
         return RepositoryIndex(
             project_id=row["project_id"], repository_url=row["repository_url"], branch=row["branch"], commit_sha=row["commit_sha"],
             indexed_at=row["indexed_at"], files_count=row["files_count"], modules_count=row["modules_count"],
             dependencies=[RepositoryDependency.model_validate(item) for item in json.loads(row["dependencies_json"])],
+            file_dependencies=self._repository_file_dependencies_sync(row["project_id"]),
         )
 
     def _create_project_sync(self, project_id: str, request: ProjectCreateRequest) -> WorkspaceProject:
@@ -623,6 +634,42 @@ class WorkspaceStore:
                         scopes.add(scope)
         return scopes
 
+    @staticmethod
+    def _resolve_relative_file_target(source_path: str, raw_target: str, tracked_paths: set[str]) -> str | None:
+        base = Path(posixpath.normpath((Path(source_path).parent / raw_target).as_posix()))
+        candidates = [base]
+        if base.suffix == "":
+            candidates.extend(base.with_suffix(suffix) for suffix in (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py"))
+            candidates.extend(base / f"index{suffix}" for suffix in (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"))
+            candidates.append(base / "__init__.py")
+        for candidate in candidates:
+            normalized = candidate.as_posix()
+            if normalized in tracked_paths:
+                return normalized
+        return None
+
+    @classmethod
+    def _file_dependencies(cls, repo_root: Path, tracked_paths: set[str]) -> list[RepositoryFileDependency]:
+        edges: set[tuple[str, str]] = set()
+        for source_path in sorted(tracked_paths):
+            source = Path(source_path)
+            if source.suffix in {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}:
+                for match in JS_IMPORT.finditer(cls._read_text(repo_root, source_path)):
+                    target = match.group(1) or match.group(2)
+                    if not target or not target.startswith("."):
+                        continue
+                    resolved = cls._resolve_relative_file_target(source_path, target, tracked_paths)
+                    if resolved and resolved != source_path:
+                        edges.add((source_path, resolved))
+            elif source.suffix == ".py":
+                for match in PYTHON_IMPORT.finditer(cls._read_text(repo_root, source_path)):
+                    module_path = match.group(1).replace(".", "/")
+                    for candidate in (f"{module_path}.py", f"{module_path}/__init__.py"):
+                        if candidate in tracked_paths and candidate != source_path:
+                            edges.add((source_path, candidate))
+                            break
+        return [RepositoryFileDependency(source_path=source, target_path=target) for source, target in sorted(edges)]
+
     @classmethod
     def _derived_modules(cls, project_id: str, repo_root: Path, tracked_paths: list[str]) -> list[dict[str, Any]]:
         scopes = sorted({scope for path in tracked_paths if (scope := module_scope(path)) is not None})
@@ -660,6 +707,7 @@ class WorkspaceStore:
         tracked_set = set(tracked_paths)
         files = self._repository_files(repo_root, tracked_paths)
         dependencies = self._dependencies(repo_root, tracked_set)
+        file_dependencies = self._file_dependencies(repo_root, tracked_set)
         modules = self._derived_modules(project_id, repo_root, tracked_paths)
         repository_url = self._run_git(repo_root, "config", "--get", "remote.origin.url") or "local"
         branch = self._run_git(repo_root, "rev-parse", "--abbrev-ref", "HEAD")
@@ -670,9 +718,14 @@ class WorkspaceStore:
             if connection.execute("SELECT 1 FROM projects WHERE id = ?", (project_id,)).fetchone() is None:
                 raise LookupError("Project not found")
             connection.execute("DELETE FROM repository_files WHERE project_id = ?", (project_id,))
+            connection.execute("DELETE FROM repository_file_dependencies WHERE project_id = ?", (project_id,))
             connection.executemany(
                 "INSERT INTO repository_files (project_id, path, kind, language, size) VALUES (?, ?, ?, ?, ?)",
                 [(project_id, item.path, item.kind, item.language, item.size) for item in files],
+            )
+            connection.executemany(
+                "INSERT INTO repository_file_dependencies (project_id, source_path, target_path, kind) VALUES (?, ?, ?, ?)",
+                [(project_id, edge.source_path, edge.target_path, edge.kind) for edge in file_dependencies],
             )
             retained_git_ids = [item["id"] for item in modules]
             if retained_git_ids:
@@ -708,11 +761,19 @@ class WorkspaceStore:
                 (project_id, repository_url, branch, commit_sha, indexed_at, len([item for item in files if item.kind == "file"]), len(modules), json.dumps([item.model_dump() for item in dependencies])),
             )
             connection.execute("UPDATE projects SET updated_at = ? WHERE id = ?", (indexed_at, project_id))
-        return RepositoryIndex(project_id=project_id, repository_url=repository_url, branch=branch, commit_sha=commit_sha, indexed_at=indexed_at, files_count=len([item for item in files if item.kind == "file"]), modules_count=len(modules), dependencies=dependencies)
+        return RepositoryIndex(project_id=project_id, repository_url=repository_url, branch=branch, commit_sha=commit_sha, indexed_at=indexed_at, files_count=len([item for item in files if item.kind == "file"]), modules_count=len(modules), dependencies=dependencies, file_dependencies=file_dependencies)
 
     async def index_repository(self, project_id: str, repo_path: str | Path) -> RepositoryIndex:
         await self.initialize()
         return await asyncio.to_thread(self._index_repository_sync, project_id, repo_path)
+
+    def _repository_file_dependencies_sync(self, project_id: str) -> list[RepositoryFileDependency]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT source_path, target_path, kind FROM repository_file_dependencies WHERE project_id = ? ORDER BY source_path, target_path",
+                (project_id,),
+            ).fetchall()
+        return [RepositoryFileDependency(source_path=row["source_path"], target_path=row["target_path"], kind=row["kind"]) for row in rows]
 
     def _repository_files_sync(self, project_id: str) -> list[RepositoryFile]:
         with self._connect() as connection:

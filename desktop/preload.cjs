@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld('agentRoom', {
   chooseCloneDestination: () => ipcRenderer.invoke('desktop:choose-clone-destination'),
   cloneGitHubRepository: (payload) => ipcRenderer.invoke('desktop:clone-github-repository', payload),
   installAndPair: (payload) => ipcRenderer.invoke('desktop:install-and-pair', payload),
+  runtimeStatus: () => ipcRenderer.invoke('desktop:runtime-status'),
+  repairRuntime: (component) => ipcRenderer.invoke('desktop:repair-runtime', { component }),
   openWorkspace: () => ipcRenderer.invoke('desktop:open-workspace'),
   openDiagnostics: () => ipcRenderer.invoke('desktop:open-diagnostics'),
 })

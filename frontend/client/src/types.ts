@@ -122,6 +122,12 @@ export interface RepositoryDependency {
   group: string
 }
 
+export interface RepositoryFileDependency {
+  source_path: string
+  target_path: string
+  kind: string
+}
+
 export interface RepositoryIndex {
   project_id: string
   repository_url: string
@@ -131,6 +137,7 @@ export interface RepositoryIndex {
   files_count: number
   modules_count: number
   dependencies: RepositoryDependency[]
+  file_dependencies: RepositoryFileDependency[]
 }
 
 export interface WorkspaceNote {

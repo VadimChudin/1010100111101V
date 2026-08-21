@@ -194,6 +194,12 @@ class RepositoryDependency(BaseModel):
     group: str = Field(default="production", max_length=80)
 
 
+class RepositoryFileDependency(BaseModel):
+    source_path: str = Field(min_length=1, max_length=1200)
+    target_path: str = Field(min_length=1, max_length=1200)
+    kind: str = Field(default="import", max_length=40)
+
+
 class RepositoryIndex(BaseModel):
     project_id: str
     repository_url: str
@@ -203,6 +209,7 @@ class RepositoryIndex(BaseModel):
     files_count: int = Field(ge=0)
     modules_count: int = Field(ge=0)
     dependencies: list[RepositoryDependency] = Field(default_factory=list)
+    file_dependencies: list[RepositoryFileDependency] = Field(default_factory=list)
 
 
 class WorkspaceSnapshot(BaseModel):

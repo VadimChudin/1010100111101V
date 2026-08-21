@@ -201,6 +201,67 @@ async function configureGraphiti() {
   return result.ok ? { ready: true, detail: 'Local Neo4j memory profile is running on loopback only.' } : { ready: false, detail: `Graphiti profile could not start: ${result.stderr || result.stdout}` }
 }
 
+async function localHttpServiceReady(url) {
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(1500) })
+    // Neo4j may answer 401 before authentication; that still proves the
+    // loopback service is alive without ever exposing its local credential.
+    return response.status > 0
+  } catch {
+    return false
+  }
+}
+
+async function localRuntimeStatus() {
+  const paths = runtimePaths()
+  const state = await readState()
+  const runtimeInstalled = existsSync(paths.binary)
+  const runtimeConfigured = existsSync(paths.config)
+  const serenaTools = runtimeInstalled && existsSync(paths.uv)
+    ? await run(paths.uv, ['tool', 'list'], { timeout: 20_000 })
+    : { ok: false, stdout: '', stderr: '' }
+  const serenaInstalled = serenaTools.ok && serenaTools.stdout.includes('serena-agent')
+  const serenaReady = serenaInstalled && await localHttpServiceReady('http://127.0.0.1:9121')
+  const docker = await run(process.platform === 'win32' ? 'docker.exe' : 'docker', ['info'], { timeout: 20_000 })
+  const graphitiReady = docker.ok && await localHttpServiceReady('http://127.0.0.1:7474')
+
+  return {
+    paired: Boolean(state.pairedWorkspacePath && runtimeConfigured),
+    runtime: {
+      state: runtimeConfigured ? 'ready' : runtimeInstalled ? 'installed' : 'not_installed',
+      detail: runtimeConfigured ? 'Verified runtime is configured for the paired workspace.' : runtimeInstalled ? 'Runtime is installed but is not paired to a workspace.' : 'Runtime is not installed on this computer.',
+    },
+    serena: {
+      state: serenaReady ? 'ready' : serenaInstalled ? 'stopped' : 'not_installed',
+      detail: serenaReady ? 'Serena semantic service is responding on local loopback.' : serenaInstalled ? 'Serena is installed but its local service is not responding.' : 'Serena is not installed yet.',
+    },
+    graphiti: {
+      state: graphitiReady ? 'ready' : docker.ok ? 'stopped' : 'unavailable',
+      detail: graphitiReady ? 'Local Neo4j memory profile is responding on loopback.' : docker.ok ? 'Docker is available but the local Graphiti memory profile is not running.' : 'Docker is unavailable, so the optional local Graphiti memory profile is deferred.',
+    },
+    lastRepairAt: state.runtimeLastRepairAt || null,
+  }
+}
+
+async function repairLocalRuntime(component = 'all') {
+  const state = await readState()
+  const workspacePath = state.pairedWorkspacePath || state.workspacePath
+  if (!workspacePath || !existsSync(runtimePaths().config)) {
+    throw new Error('Pair a local project before repairing its runtime components.')
+  }
+  await ensureGitWorkspace(workspacePath)
+  const paths = await bootstrapRuntime()
+  const repaired = {}
+  if (component === 'all' || component === 'runtime') {
+    startDetached(paths.binary, ['serve', '--config', paths.config, '--auto-update'])
+    repaired.runtime = { ready: true, detail: 'Runtime service was restarted in the background.' }
+  }
+  if (component === 'all' || component === 'serena') repaired.serena = await configureSerena(paths, workspacePath)
+  if (component === 'all' || component === 'graphiti') repaired.graphiti = await configureGraphiti()
+  await patchState({ runtimeLastRepairAt: new Date().toISOString() })
+  return { repaired, status: await localRuntimeStatus() }
+}
+
 async function setSessionCookie(token) {
   if (!DESKTOP_SESSION) throw new Error('Desktop browser session is not ready')
   await DESKTOP_SESSION.cookies.set({
@@ -360,6 +421,8 @@ ipcMain.handle('desktop:install-and-pair', async (_event, payload) => {
   return { runtime: 'Registered and synchronizing with verified auto-update.', serena, graphiti }
 })
 
+ipcMain.handle('desktop:runtime-status', async () => localRuntimeStatus())
+ipcMain.handle('desktop:repair-runtime', async (_event, payload) => repairLocalRuntime(payload?.component))
 ipcMain.handle('desktop:open-workspace', () => openWorkspaceInMainWindow())
 ipcMain.handle('desktop:open-diagnostics', async () => shell.openPath(runtimeHome()))
 

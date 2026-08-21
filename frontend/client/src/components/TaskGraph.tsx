@@ -34,7 +34,52 @@ function FileNode({ data }: NodeProps) {
   const file = data.file as RepositoryFile
   const selected = Boolean(data.selected)
   const markerCount = Number(data.markerCount || 0)
-  return <div title={file.path} className={`w-[210px] rounded-xl border p-3 transition-all ${selected ? 'border-signal-ice/75 bg-signal-ice/[0.1]' : 'border-white/[0.11] bg-[#171a20]/95 hover:border-signal-ice/35'}`}><Handle type="target" position={Position.Left} className="!h-1.5 !w-1.5 !border-0 !bg-signal-ice" /><div className="flex items-start gap-2"><FileCode2 size={14} className="mt-0.5 shrink-0 text-signal-ice" /><div className="min-w-0"><p className="truncate font-mono text-[10px] text-white/90">{file.path.split('/').at(-1)}</p><p className="mt-1 truncate font-mono text-[8px] uppercase tracking-[0.1em] text-text-dim">{file.language || 'file'} · {file.size ? `${Math.max(1, Math.round(file.size / 1024))} kb` : 'size unknown'}</p></div>{markerCount > 0 && <span className="ml-auto rounded bg-amber-300/15 px-1.5 py-0.5 font-mono text-[8px] text-amber-200">{markerCount}</span>}</div><Handle type="source" position={Position.Right} className="!h-1.5 !w-1.5 !border-0 !bg-signal-ice" /></div>
+  const connected = Boolean(data.connected)
+  return <div title={file.path} className={`w-[150px] rounded-md border px-2 py-1.5 transition-all ${selected ? 'border-signal-ice/80 bg-signal-ice/[0.12] shadow-[0_0_0_3px_rgba(159,232,255,.07)]' : connected ? 'border-signal-ice/22 bg-[#171a20]/95 hover:border-signal-ice/50' : 'border-white/[0.09] bg-[#171a20]/88 hover:border-white/25'}`}><Handle type="target" position={Position.Left} className="!h-1.5 !w-1.5 !border-0 !bg-signal-ice" /><div className="flex items-start gap-1.5"><FileCode2 size={11} className="mt-0.5 shrink-0 text-signal-ice/85" /><div className="min-w-0"><p className="truncate font-mono text-[8px] text-white/90">{file.path.split('/').at(-1)}</p><p className="mt-0.5 truncate font-mono text-[6px] uppercase tracking-[0.09em] text-text-dim">{file.language || 'file'} · {file.size ? `${Math.max(1, Math.round(file.size / 1024))} kb` : 'size ?'}</p></div>{markerCount > 0 && <span className="ml-auto rounded bg-amber-300/15 px-1 py-0.5 font-mono text-[7px] text-amber-200">{markerCount}</span>}</div><Handle type="source" position={Position.Right} className="!h-1.5 !w-1.5 !border-0 !bg-signal-ice" /></div>
+}
+
+function fileSpiderPositions(files: RepositoryFile[], edges: Array<{ source_path: string; target_path: string }>) {
+  const paths = files.map((file) => file.path)
+  const adjacency = new Map(paths.map((path) => [path, new Set<string>()]))
+  for (const edge of edges) {
+    adjacency.get(edge.source_path)?.add(edge.target_path)
+    adjacency.get(edge.target_path)?.add(edge.source_path)
+  }
+  const visited = new Set<string>()
+  const components: string[][] = []
+  const isolated: string[] = []
+  for (const path of paths) {
+    if (visited.has(path)) continue
+    const queue = [path]
+    const component: string[] = []
+    visited.add(path)
+    while (queue.length) {
+      const current = queue.shift()!
+      component.push(current)
+      for (const next of Array.from(adjacency.get(current) || [])) if (!visited.has(next)) { visited.add(next); queue.push(next) }
+    }
+    if (component.length > 1) components.push(component)
+    else isolated.push(path)
+  }
+  components.sort((a, b) => b.length - a.length || a[0].localeCompare(b[0]))
+  const positions = new Map<string, { x: number; y: number }>()
+  components.forEach((component, index) => {
+    const angle = index * 2.399963229728653
+    const distance = index === 0 ? 0 : 760 + Math.floor(index / 5) * 360
+    const center = { x: 900 + Math.cos(angle) * distance, y: 620 + Math.sin(angle) * distance }
+    const ranked = [...component].sort((a, b) => (adjacency.get(b)?.size || 0) - (adjacency.get(a)?.size || 0) || a.localeCompare(b))
+    positions.set(ranked[0], center)
+    ranked.slice(1).forEach((path, nodeIndex) => {
+      const ring = Math.floor(Math.sqrt(nodeIndex))
+      const radius = 250 + ring * 130
+      const nodeAngle = (nodeIndex / Math.max(1, ranked.length - 1)) * Math.PI * 2 + angle / 3
+      positions.set(path, { x: center.x + Math.cos(nodeAngle) * radius, y: center.y + Math.sin(nodeAngle) * radius })
+    })
+  })
+  const isolatedColumns = Math.max(6, Math.ceil(Math.sqrt(Math.max(1, isolated.length))))
+  const isolatedTop = components.length ? 1560 + Math.ceil(components.length / 5) * 340 : 160
+  isolated.forEach((path, index) => positions.set(path, { x: 100 + (index % isolatedColumns) * 172, y: isolatedTop + Math.floor(index / isolatedColumns) * 72 }))
+  return positions
 }
 
 const nodeTypes = { mission: PlanNode, module: ModuleNode, file: FileNode }
@@ -70,30 +115,34 @@ export default function TaskGraph({ plan, events, connected, workspace, reposito
   const moduleMarkers = useMemo(() => workspace?.markers.reduce<Record<string, WorkspaceMarker[]>>((groups, marker) => ({ ...groups, [marker.module_id]: [...(groups[marker.module_id] || []), marker] }), {}) || {}, [workspace])
   const visibleFiles = useMemo(() => files.filter((file) => file.kind === 'file').filter((file) => lens !== 'changes' || Boolean(selected?.source_scope && file.path.startsWith(selected.source_scope))), [files, lens, selected?.source_scope])
   const markerByScope = useMemo(() => Object.fromEntries((workspace?.modules || []).map((module) => [module.source_scope, (moduleMarkers[module.id] || []).length])), [moduleMarkers, workspace?.modules])
+  const visiblePathSet = useMemo(() => new Set(visibleFiles.map((file) => file.path)), [visibleFiles])
+  const visibleFileDependencies = useMemo(() => (repository?.file_dependencies || []).filter((edge) => visiblePathSet.has(edge.source_path) && visiblePathSet.has(edge.target_path)), [repository?.file_dependencies, visiblePathSet])
+  const filePositions = useMemo(() => fileSpiderPositions(visibleFiles, visibleFileDependencies), [visibleFileDependencies, visibleFiles])
+  const selectedFileNeighbors = useMemo(() => new Set(visibleFileDependencies.flatMap((edge) => edge.source_path === selectedFilePath ? [edge.target_path] : edge.target_path === selectedFilePath ? [edge.source_path] : [])), [selectedFilePath, visibleFileDependencies])
 
   const desiredNodes = useMemo<Node[]>(() => {
     if (!usingWorkspace && visibleFiles.length === 0) return safePlan.map((step, index) => ({ id: step.id, type: 'mission', position: { x: 110 + (index % 2) * 310, y: 120 + Math.floor(index / 2) * 180 }, data: { step } }))
     if (lens === 'files' || lens === 'changes') {
-      // A compact grid keeps the entire indexed file surface visible at fitView;
-      // relationships can then be explored through selection and focused lenses.
-      const columns = Math.max(4, Math.ceil(Math.sqrt(Math.max(visibleFiles.length, 1) * 1.25)))
-      return visibleFiles.map((file, index) => ({ id: `file:${file.path}`, type: 'file', position: { x: 64 + (index % columns) * 228, y: 116 + Math.floor(index / columns) * 102 }, data: { file, selected: selected?.source_scope ? file.path.startsWith(selected.source_scope) : false, markerCount: Object.entries(markerByScope).find(([scope]) => scope && file.path.startsWith(scope))?.[1] || 0 } }))
+      return visibleFiles.map((file) => ({ id: `file:${file.path}`, type: 'file', position: filePositions.get(file.path) || { x: 80, y: 80 }, data: { file, selected: selectedFilePath === file.path || (selected?.source_scope ? file.path.startsWith(selected.source_scope) : false), connected: selectedFileNeighbors.has(file.path) || visibleFileDependencies.some((edge) => edge.source_path === file.path || edge.target_path === file.path), markerCount: Object.entries(markerByScope).find(([scope]) => scope && file.path.startsWith(scope))?.[1] || 0 } }))
     }
     return workspace!.modules.map((module) => ({ id: module.id, type: 'module', position: { x: module.position_x, y: module.position_y }, data: { module, markers: moduleMarkers[module.id] || [], selected: selectedModuleId === module.id } }))
-  }, [lens, markerByScope, moduleMarkers, safePlan, selected?.source_scope, selectedModuleId, usingWorkspace, visibleFiles, workspace])
+  }, [filePositions, lens, markerByScope, moduleMarkers, safePlan, selected?.source_scope, selectedFileNeighbors, selectedFilePath, selectedModuleId, usingWorkspace, visibleFileDependencies, visibleFiles, workspace])
 
   const desiredEdges = useMemo<Edge[]>(() => {
     if (!usingWorkspace && visibleFiles.length === 0) return safePlan.slice(1).map((step, index) => ({ id: `edge-${index}`, source: safePlan[index].id, target: step.id, animated: true, style: { stroke: '#9fe8ff', strokeWidth: 1, opacity: 0.48 }, markerEnd: { type: MarkerType.ArrowClosed, color: '#9fe8ff' } }))
-    if (lens === 'files' || lens === 'changes') return []
+    if (lens === 'files' || lens === 'changes') return visibleFileDependencies.map((edge) => {
+      const focused = Boolean(selectedFilePath) && (edge.source_path === selectedFilePath || edge.target_path === selectedFilePath)
+      return { id: `file-edge:${edge.source_path}:${edge.target_path}`, source: `file:${edge.source_path}`, target: `file:${edge.target_path}`, animated: focused, style: { stroke: focused ? '#9fe8ff' : '#5b7f8e', strokeWidth: focused ? 1.7 : 0.8, opacity: selectedFilePath && !focused ? 0.08 : focused ? 0.92 : 0.42 }, markerEnd: { type: MarkerType.ArrowClosed, color: focused ? '#9fe8ff' : '#5b7f8e' } }
+    })
     const base = workspace!.modules.flatMap((module, index) => module.dependencies.length ? module.dependencies.filter((dependency) => workspace!.modules.some((candidate) => candidate.id === dependency)).map((dependency) => ({ id: `${dependency}-${module.id}`, source: dependency, target: module.id })) : index ? [{ id: `${workspace!.modules[index - 1].id}-${module.id}`, source: workspace!.modules[index - 1].id, target: module.id }] : [])
     return base.map((edge) => { const focused = Boolean(selectedModuleId) && (edge.source === selectedModuleId || edge.target === selectedModuleId); return { ...edge, animated: focused, style: { stroke: focused ? '#9fe8ff' : '#52606d', strokeWidth: focused ? 1.8 : 1, opacity: selectedModuleId && !focused ? 0.12 : focused ? 0.9 : 0.43 }, markerEnd: { type: MarkerType.ArrowClosed, color: focused ? '#9fe8ff' : '#52606d' } } })
-  }, [lens, safePlan, selectedModuleId, usingWorkspace, visibleFiles.length, workspace])
+  }, [lens, safePlan, selectedFilePath, selectedModuleId, usingWorkspace, visibleFileDependencies, visibleFiles.length, workspace])
 
   const [nodes, setNodes, onNodesChange] = useNodesState(desiredNodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState(desiredEdges)
   useEffect(() => { setNodes(desiredNodes); setEdges(desiredEdges) }, [desiredEdges, desiredNodes, setEdges, setNodes])
   useEffect(() => { if (!usingWorkspace) { const latestId = events.at(-1)?.step_id || events.at(-1)?.stepId; if (latestId) setNodes((current) => current.map((node) => node.id === latestId ? { ...node, data: { ...node.data, step: { ...(node.data.step as PlanStep), status: 'active' } } } : node)) } }, [events, setNodes, usingWorkspace])
 
-  const mapTitle = lens === 'files' ? 'All indexed files' : lens === 'changes' ? 'Git changes lens' : lens === 'tasks' ? 'Tasks on the map' : lens === 'dependencies' ? 'Dependency map' : workspace?.project.name || 'Project map'
-  return <section className="relative h-full min-h-[620px] flex-1 overflow-hidden bg-[#0d0f13]" aria-label="Project workspace map"><div className="absolute left-5 top-5 z-10 max-w-[calc(100%-40px)] sm:left-8 sm:top-7"><p className="eyebrow">Project canvas</p><h2 className="mt-1 text-xl font-semibold tracking-[-0.035em] text-white">{mapTitle}</h2><p className="mt-1 max-w-[460px] text-xs leading-5 text-text-dim">{usingWorkspace ? selected ? `${selected.title} is in focus. Direct relationships remain highlighted.` : 'Select a module to follow its files, context and direct relationships.' : 'Describe a project task in Chat to create a shared work context.'}</p><div className="scrollbar-thin mt-4 flex max-w-[calc(100vw-110px)] gap-1.5 overflow-x-auto pb-1">{LENSES.map(({ id, label, icon: Icon }) => <button type="button" key={id} onClick={() => setLens(id)} className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1.5 font-mono text-[9px] uppercase tracking-[0.1em] transition-colors ${lens === id ? 'border-signal-ice/35 bg-signal-ice/[0.1] text-signal-ice' : 'border-white/[0.1] bg-[#14171c]/82 text-text-dim hover:text-white'}`}><Icon size={11} />{label}</button>)}</div></div><div className="absolute right-5 top-5 z-10 flex items-center gap-2 sm:right-8 sm:top-7"><span className={`hidden items-center gap-1.5 rounded-full border border-white/10 bg-[#14171c]/82 px-2.5 py-1.5 font-mono text-[9px] uppercase tracking-[0.12em] text-text-dim backdrop-blur sm:flex`}><span className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-emerald-300 live-dot' : 'bg-rose-300'}`} />{connected ? 'Synced' : 'Offline'}</span><button type="button" onClick={onIndexRepository} disabled={indexing || !onIndexRepository} className="inline-flex items-center gap-1.5 rounded-full border border-signal-ice/30 bg-signal-ice/[0.07] px-2.5 py-1.5 font-mono text-[9px] uppercase tracking-[0.1em] text-signal-ice transition-colors hover:bg-signal-ice/[0.14] disabled:opacity-60"><RefreshCw size={11} className={indexing ? 'animate-spin' : ''} />{indexing ? 'Indexing' : 'Refresh'}</button></div><div className="absolute bottom-5 left-5 z-10 rounded-full border border-white/[0.09] bg-[#14171c]/80 px-2.5 py-1.5 font-mono text-[9px] uppercase tracking-[0.1em] text-text-dim sm:bottom-7 sm:left-8">{usingWorkspace ? `${workspace!.modules.length} modules · ${repository?.files_count ?? files.length} tracked` : 'No project index yet'}</div><ReactFlow nodes={nodes} edges={edges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={(_, node) => { if (node.type === 'module') { setSelectedFilePath(undefined); onSelectModule?.(node.id); setInspectorOpen(true) } if (node.type === 'file') { const file = node.data.file as RepositoryFile; setSelectedFilePath(file.path); setInspectorOpen(true) } }} nodeTypes={nodeTypes} fitView fitViewOptions={{ padding: 0.28 }} minZoom={0.32} maxZoom={1.4} proOptions={{ hideAttribution: true }}><Background color="#2b3037" gap={30} size={1} /><Controls showInteractive={false} /><MiniMap nodeColor={(node) => node.type === 'file' ? '#65717d' : node.type === 'module' ? '#5f8798' : '#47515d'} maskColor="rgba(11,13,16,.78)" /></ReactFlow>{inspectorOpen && (selectedFile ? <FileInspector file={selectedFile} onClose={() => setInspectorOpen(false)} /> : <ProjectInspector module={selected} workspace={workspace} files={files} onClose={() => setInspectorOpen(false)} />)}</section>
+  const mapTitle = lens === 'files' ? 'File dependency spider' : lens === 'changes' ? 'Git changes lens' : lens === 'tasks' ? 'Tasks on the map' : lens === 'dependencies' ? 'Dependency map' : workspace?.project.name || 'Project map'
+  return <section className="relative h-full min-h-[620px] flex-1 overflow-hidden bg-[#0d0f13]" aria-label="Project workspace map"><div className="absolute left-5 top-5 z-10 max-w-[calc(100%-40px)] sm:left-8 sm:top-7"><p className="eyebrow">Project canvas</p><h2 className="mt-1 text-xl font-semibold tracking-[-0.035em] text-white">{mapTitle}</h2><p className="mt-1 max-w-[460px] text-xs leading-5 text-text-dim">{usingWorkspace ? selectedFile ? `${selectedFile.path} is in focus. Its direct imports are highlighted.` : visibleFileDependencies.length ? `${visibleFileDependencies.length} real file imports are shown. Select a file to isolate its threads.` : 'Refresh the project index to extract real file imports; no synthetic links are drawn.' : 'Describe a project task in Chat to create a shared work context.'}</p><div className="scrollbar-thin mt-4 flex max-w-[calc(100vw-110px)] gap-1.5 overflow-x-auto pb-1">{LENSES.map(({ id, label, icon: Icon }) => <button type="button" key={id} onClick={() => setLens(id)} className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1.5 font-mono text-[9px] uppercase tracking-[0.1em] transition-colors ${lens === id ? 'border-signal-ice/35 bg-signal-ice/[0.1] text-signal-ice' : 'border-white/[0.1] bg-[#14171c]/82 text-text-dim hover:text-white'}`}><Icon size={11} />{label}</button>)}</div></div><div className="absolute right-5 top-5 z-10 flex items-center gap-2 sm:right-8 sm:top-7"><span className={`hidden items-center gap-1.5 rounded-full border border-white/10 bg-[#14171c]/82 px-2.5 py-1.5 font-mono text-[9px] uppercase tracking-[0.12em] text-text-dim backdrop-blur sm:flex`}><span className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-emerald-300 live-dot' : 'bg-rose-300'}`} />{connected ? 'Synced' : 'Offline'}</span><button type="button" onClick={onIndexRepository} disabled={indexing || !onIndexRepository} className="inline-flex items-center gap-1.5 rounded-full border border-signal-ice/30 bg-signal-ice/[0.07] px-2.5 py-1.5 font-mono text-[9px] uppercase tracking-[0.1em] text-signal-ice transition-colors hover:bg-signal-ice/[0.14] disabled:opacity-60"><RefreshCw size={11} className={indexing ? 'animate-spin' : ''} />{indexing ? 'Indexing' : 'Refresh'}</button></div><div className="absolute bottom-5 left-5 z-10 rounded-full border border-white/[0.09] bg-[#14171c]/80 px-2.5 py-1.5 font-mono text-[9px] uppercase tracking-[0.1em] text-text-dim sm:bottom-7 sm:left-8">{usingWorkspace ? `${workspace!.modules.length} modules · ${repository?.files_count ?? files.length} tracked` : 'No project index yet'}</div><ReactFlow nodes={nodes} edges={edges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={(_, node) => { if (node.type === 'module') { setSelectedFilePath(undefined); onSelectModule?.(node.id); setInspectorOpen(true) } if (node.type === 'file') { const file = node.data.file as RepositoryFile; setSelectedFilePath(file.path); setInspectorOpen(true) } }} nodeTypes={nodeTypes} fitView fitViewOptions={{ padding: 0.28 }} minZoom={0.32} maxZoom={1.4} proOptions={{ hideAttribution: true }}><Background color="#2b3037" gap={30} size={1} /><Controls showInteractive={false} /><MiniMap nodeColor={(node) => node.type === 'file' ? '#65717d' : node.type === 'module' ? '#5f8798' : '#47515d'} maskColor="rgba(11,13,16,.78)" /></ReactFlow>{inspectorOpen && (selectedFile ? <FileInspector file={selectedFile} onClose={() => setInspectorOpen(false)} /> : <ProjectInspector module={selected} workspace={workspace} files={files} onClose={() => setInspectorOpen(false)} />)}</section>
 }

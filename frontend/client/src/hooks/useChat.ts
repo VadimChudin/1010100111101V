@@ -156,7 +156,11 @@ export function useChat() {
     setMessages((current) => [...current, { id: `user-${Date.now()}`, role: 'user', content: message, timestamp: new Date().toISOString() }])
     try {
       const response = await fetch(`${apiUrl.replace(/\/$/, '')}/v1/runs`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, approval_mode: approvalMode }) })
-      if (!response.ok) throw new Error(`Request failed with ${response.status}`)
+      if (!response.ok) {
+        if (response.status === 401) throw new Error('Your Agent Room session has expired. Reconnect GitHub from the desktop setup screen, then reopen the project.')
+        const body = await response.json().catch(() => null) as { detail?: string } | null
+        throw new Error(body?.detail || `Agent request failed with ${response.status}`)
+      }
       const data = await response.json() as RunSubmission & { mode?: 'chat' | 'project' }
       setRunId(data.run_id)
       if (data.mode === 'chat') {
@@ -168,10 +172,11 @@ export function useChat() {
         }
         terminalRef.current = true
         setLoading(false)
-        setError('The chat model did not return an answer. Please retry in a moment.')
+        setError(data.answer || 'The chat model did not return an answer. Please retry in a moment.')
         return
       }
       if (data.mode === 'project') {
+        setPlan([{ id: `task-${data.run_id}`, title: message, description: 'Clarifying the scope before any project changes.', status: 'active', tool: 'Clarify' }])
         setMessages((current) => [...current, { id: `project-${Date.now()}`, role: 'assistant', content: 'Понял. Сначала соберу контекст и уточню важные детали, затем предложу следующий шаг.', timestamp: new Date().toISOString(), runId: data.run_id, stage: 'planning' }])
       }
 
@@ -191,8 +196,9 @@ export function useChat() {
       }
       streamRef.current = source
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not reach the agent API')
-      setMessages((current) => [...current, { id: `error-${Date.now()}`, role: 'system', content: 'The run could not be started. Check the API URL and try again.', timestamp: new Date().toISOString(), stage: 'error' }])
+      const detail = err instanceof Error ? err.message : 'Could not reach the agent API'
+      setError(detail)
+      setMessages((current) => [...current, { id: `error-${Date.now()}`, role: 'system', content: detail, timestamp: new Date().toISOString(), stage: 'error' }])
       setLoading(false)
     }
   }, [apiUrl, appendEvent, approvalMode, closeStream, loading])

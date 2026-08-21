@@ -18,6 +18,7 @@ from src.auth.github import GitHubOAuth, GitHubOAuthError
 from src.config import get_settings
 from src.events import get_event_broker
 from src.orchestrator.conversation import requires_project_work, run_conversation, run_project_clarification
+from src.omniroute.router import OpenRouterUnavailableError
 from src.orchestrator.graph import run_agent
 from src.orchestrator.schemas import AgentPlan
 from src.policy import ApprovalDecisionRequest, ApprovalMode, ToolCallRequest, ToolCallResponse
@@ -69,6 +70,14 @@ class ChatRequest(BaseModel):
     approval_mode: ApprovalMode = ApprovalMode.CONFIRM_EACH
 
 
+class AgentConnectionStatus(BaseModel):
+    authenticated: bool = True
+    provider: str = "OpenRouter"
+    configured: bool
+    preferred_chat_model: str
+    fallback_models: int
+
+
 class PublicPlanStep(BaseModel):
     id: str
     title: str
@@ -116,6 +125,17 @@ def public_plan(plan_payload: dict | None, task: str) -> PublicAgentPlan:
 @router.get("/healthz")
 async def healthz():
     return {"status": "ok"}
+
+
+@router.get("/agent/status", response_model=AgentConnectionStatus)
+async def agent_connection_status(request: Request):
+    await require_user(request)
+    settings = get_settings()
+    return AgentConnectionStatus(
+        configured=bool(settings.openrouter_api_key),
+        preferred_chat_model="nvidia/nemotron-3-nano-30b-a3b:free",
+        fallback_models=max(0, settings.openrouter_max_fallback_models - 1),
+    )
 
 
 @router.get("/auth/status", response_model=AuthStatus)
@@ -556,11 +576,16 @@ async def execute_conversation_run(run_id: str, message: str) -> tuple[str, str]
             }
         )
         return "completed", answer
+    except OpenRouterUnavailableError as exc:
+        message = str(exc)
+        await store.complete_run(run_id, "failed", message, None)
+        await event_sink({"type": "run.failed", "payload": {"message": message, "provider_code": exc.code}})
+        return "failed", message
     except Exception:
-        message = "The chat model did not return an answer. Please retry in a moment."
-        await store.complete_run(run_id, "failed", "", None)
+        message = "Agent Room could not complete the chat request. Retry in a moment."
+        await store.complete_run(run_id, "failed", message, None)
         await event_sink({"type": "run.failed", "payload": {"message": message}})
-        return "failed", ""
+        return "failed", message
 
 
 async def execute_project_clarification_run(run_id: str, message: str) -> None:
