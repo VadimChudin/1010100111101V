@@ -11,6 +11,8 @@ type RuntimeStatus = {
 }
 type AgentStatus = {
   configured: boolean
+  state: string
+  detail: string
   provider: string
   preferred_chat_model: string
   fallback_models: number
@@ -87,10 +89,10 @@ export default function RuntimeSettings() {
   }, [])
 
   const agentService: LocalService | undefined = agent ? {
-    state: agent.configured ? 'ready' : 'not_configured',
-    detail: agent.configured
-      ? `${agent.provider} is configured. Chat prefers ${agent.preferred_chat_model} with ${agent.fallback_models} fallback model${agent.fallback_models === 1 ? '' : 's'}.`
-      : 'The Agent backend is reachable, but OPENROUTER_API_KEY is not configured on the server. Chat cannot answer until this key is added.',
+    state: agent.state,
+    detail: agent.state === 'ready'
+      ? `${agent.detail} Chat prefers ${agent.preferred_chat_model} with ${agent.fallback_models} fallback model${agent.fallback_models === 1 ? '' : 's'}.`
+      : agent.detail,
   } : undefined
 
   return <div className="scrollbar-thin h-full overflow-y-auto bg-[#151515] p-4"><div className="mx-auto max-w-[680px]"><header className="mb-4 flex items-start justify-between border-b border-white/[0.08] pb-3"><div><p className="font-mono text-[8px] uppercase tracking-[0.14em] text-signal-ice">Settings</p><h1 className="mt-1 text-[15px] font-medium text-white/90">Connections & local runtime</h1><p className="mt-1 text-[10px] leading-4 text-white/46">The agent runs in the cloud; Serena and Graphiti run locally and stay private to this computer.</p></div><button type="button" onClick={() => void refresh()} className="rounded-sm border border-white/[0.1] p-1.5 text-white/52 transition-colors hover:border-signal-ice/30 hover:text-signal-ice" aria-label="Refresh status"><RefreshCw size={12} /></button></header>

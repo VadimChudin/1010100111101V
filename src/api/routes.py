@@ -18,7 +18,7 @@ from src.auth.github import GitHubOAuth, GitHubOAuthError
 from src.config import get_settings
 from src.events import get_event_broker
 from src.orchestrator.conversation import requires_project_work, run_conversation, run_project_clarification
-from src.omniroute.router import OpenRouterUnavailableError
+from src.omniroute.router import OmniRoute, OpenRouterUnavailableError
 from src.orchestrator.graph import run_agent
 from src.orchestrator.schemas import AgentPlan
 from src.policy import ApprovalDecisionRequest, ApprovalMode, ToolCallRequest, ToolCallResponse
@@ -74,6 +74,8 @@ class AgentConnectionStatus(BaseModel):
     authenticated: bool = True
     provider: str = "OpenRouter"
     configured: bool
+    state: str
+    detail: str
     preferred_chat_model: str
     fallback_models: int
 
@@ -131,8 +133,15 @@ async def healthz():
 async def agent_connection_status(request: Request):
     await require_user(request)
     settings = get_settings()
+    router_client = OmniRoute()
+    try:
+        provider = await router_client.provider_status()
+    finally:
+        await router_client.close()
     return AgentConnectionStatus(
         configured=bool(settings.openrouter_api_key),
+        state=provider.state,
+        detail=provider.detail,
         preferred_chat_model="nvidia/nemotron-3-nano-30b-a3b:free",
         fallback_models=max(0, settings.openrouter_max_fallback_models - 1),
     )

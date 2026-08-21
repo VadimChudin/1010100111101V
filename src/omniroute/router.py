@@ -14,6 +14,11 @@ class OpenRouterUnavailableError(RuntimeError):
         self.code = code
 
 
+class ProviderStatus(BaseModel):
+    state: str
+    detail: str
+
+
 class ChatRequest(BaseModel):
     messages: list[dict] = Field(min_length=1)
     complexity: str = "medium"
@@ -37,6 +42,26 @@ class OmniRoute:
     async def close(self) -> None:
         if self._owns_client:
             await self.client.aclose()
+
+    async def provider_status(self) -> ProviderStatus:
+        if not self.settings.openrouter_api_key:
+            return ProviderStatus(state="not_configured", detail="OPENROUTER_API_KEY is not configured on the Agent Room server.")
+        try:
+            response = await self.client.get(
+                f"{self.settings.openrouter_base_url}/auth/key",
+                headers={"Authorization": f"Bearer {self.settings.openrouter_api_key}"},
+                timeout=min(self.settings.openrouter_attempt_timeout_s, 10),
+            )
+            if response.status_code in {401, 403}:
+                return ProviderStatus(state="authentication_failed", detail="OpenRouter rejected the configured server key. Replace OPENROUTER_API_KEY and retry.")
+            response.raise_for_status()
+            if not isinstance(response.json().get("data"), dict):
+                return ProviderStatus(state="unavailable", detail="OpenRouter did not return an account status for the configured key.")
+            return ProviderStatus(state="ready", detail="OpenRouter accepted the configured server key and Chat is ready.")
+        except httpx.HTTPError:
+            return ProviderStatus(state="unavailable", detail="OpenRouter could not be reached for a credential health check. Retry in a moment.")
+        except ValueError:
+            return ProviderStatus(state="unavailable", detail="OpenRouter returned an unreadable credential health response.")
 
     async def chat(self, request: ChatRequest) -> ChatResponse:
         if not self.settings.openrouter_api_key:
