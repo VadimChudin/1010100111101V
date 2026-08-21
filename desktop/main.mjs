@@ -190,9 +190,11 @@ async function configureSerena(paths, workspacePath) {
   return { ready: true, detail: 'Installed and running with the language-server backend on loopback; Agent Room exposes read-only tools only.' }
 }
 
-async function configureGraphiti() {
+async function configureGraphiti(paths) {
+  const packages = await run(paths.python, ['-m', 'pip', 'install', '--disable-pip-version-check', '--upgrade', 'neo4j>=5.25.0', 'graphiti-core>=0.17.0'], { timeout: 600_000 })
+  if (!packages.ok) return { ready: false, detail: `Graphiti package installation failed: ${packages.stderr || packages.stdout}` }
   const docker = await run(process.platform === 'win32' ? 'docker.exe' : 'docker', ['info'], { timeout: 20_000 })
-  if (!docker.ok) return { ready: false, detail: 'Docker is not running. The local Graphiti profile is deferred; cloud provenance envelopes continue to synchronize.' }
+  if (!docker.ok) return { ready: false, detail: 'Graphiti packages are installed, but Docker is not running. Start Docker to launch the local Neo4j memory profile.' }
   const graphitiDir = path.join(runtimeHome(), 'graphiti')
   await mkdir(graphitiDir, { recursive: true })
   const envFile = path.join(graphitiDir, '.env')
@@ -222,8 +224,11 @@ async function localRuntimeStatus() {
     : { ok: false, stdout: '', stderr: '' }
   const serenaInstalled = serenaTools.ok && serenaTools.stdout.includes('serena-agent')
   const serenaReady = serenaInstalled && await localHttpServiceReady('http://127.0.0.1:9121')
+  const graphitiPackages = runtimeInstalled
+    ? await run(paths.python, ['-c', 'import graphiti_core, neo4j'], { timeout: 20_000 })
+    : { ok: false, stdout: '', stderr: '' }
   const docker = await run(process.platform === 'win32' ? 'docker.exe' : 'docker', ['info'], { timeout: 20_000 })
-  const graphitiReady = docker.ok && await localHttpServiceReady('http://127.0.0.1:7474')
+  const graphitiReady = graphitiPackages.ok && docker.ok && await localHttpServiceReady('http://127.0.0.1:7474')
 
   return {
     paired: Boolean(state.pairedWorkspacePath && runtimeConfigured),
@@ -236,8 +241,8 @@ async function localRuntimeStatus() {
       detail: serenaReady ? 'Serena semantic service is responding on local loopback.' : serenaInstalled ? 'Serena is installed but its local service is not responding.' : 'Serena is not installed yet.',
     },
     graphiti: {
-      state: graphitiReady ? 'ready' : docker.ok ? 'stopped' : 'unavailable',
-      detail: graphitiReady ? 'Local Neo4j memory profile is responding on loopback.' : docker.ok ? 'Docker is available but the local Graphiti memory profile is not running.' : 'Docker is unavailable, so the optional local Graphiti memory profile is deferred.',
+      state: graphitiReady ? 'ready' : graphitiPackages.ok && docker.ok ? 'stopped' : graphitiPackages.ok ? 'docker_required' : 'not_installed',
+      detail: graphitiReady ? 'Graphiti client and local Neo4j memory profile are responding on loopback.' : graphitiPackages.ok && docker.ok ? 'Graphiti is installed, but the local Neo4j memory profile is not running.' : graphitiPackages.ok ? 'Graphiti is installed. Start Docker to launch its local Neo4j memory profile.' : 'Graphiti packages are not installed yet.',
     },
     lastRepairAt: state.runtimeLastRepairAt || null,
   }
@@ -257,7 +262,7 @@ async function repairLocalRuntime(component = 'all') {
     repaired.runtime = { ready: true, detail: 'Runtime service was restarted in the background.' }
   }
   if (component === 'all' || component === 'serena') repaired.serena = await configureSerena(paths, workspacePath)
-  if (component === 'all' || component === 'graphiti') repaired.graphiti = await configureGraphiti()
+  if (component === 'all' || component === 'graphiti') repaired.graphiti = await configureGraphiti(paths)
   await patchState({ runtimeLastRepairAt: new Date().toISOString() })
   return { repaired, status: await localRuntimeStatus() }
 }
@@ -416,7 +421,7 @@ ipcMain.handle('desktop:install-and-pair', async (_event, payload) => {
   const registration = await run(paths.binary, ['register', '--config', paths.config, '--pairing-token', pairing.pairing_token])
   if (!registration.ok) throw new Error(`Device registration failed: ${registration.stderr || registration.stdout}`)
   startDetached(paths.binary, ['serve', '--config', paths.config, '--auto-update'])
-  const [serena, graphiti] = await Promise.all([configureSerena(paths, workspacePath), configureGraphiti()])
+  const [serena, graphiti] = await Promise.all([configureSerena(paths, workspacePath), configureGraphiti(paths)])
   await patchState({ pairedWorkspacePath: workspacePath, pairedAt: new Date().toISOString() })
   return { runtime: 'Registered and synchronizing with verified auto-update.', serena, graphiti }
 })
