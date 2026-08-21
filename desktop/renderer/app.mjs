@@ -146,9 +146,15 @@ async function restoreState() {
     installButton.disabled = false
   }
   if (status.connected) {
+    if (status.workspacePath && status.paired) {
+      // Returning users should enter their last paired project immediately.
+      // Source selection and setup remain available only when changing project.
+      await window.agentRoom.openWorkspace()
+      return
+    }
     if (status.workspacePath) {
       showPanel('setup')
-      setSetupNote(`Connected as ${status.user?.login ?? 'GitHub user'}. The saved local project is ready to be paired again if needed.`)
+      setSetupNote(`Connected as ${status.user?.login ?? 'GitHub user'}. Finish pairing this local project once to open it automatically on future launches.`)
     } else {
       showPanel('source')
       sourceNote.textContent = `Connected as ${status.user?.login ?? 'GitHub user'}. Choose the project source for this computer.`

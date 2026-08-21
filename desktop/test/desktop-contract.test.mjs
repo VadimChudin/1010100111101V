@@ -54,3 +54,21 @@ test('desktop component commands retain local-only Serena boundary and verified 
   assert.match(main, /'docker', \['compose'/)
   assert.match(main, /shell\.openExternal/)
 })
+
+
+test('desktop Cloud cookie and remote workspace share one persistent Electron session', async () => {
+  const main = await source('main.mjs')
+  assert.match(main, /session\.fromPartition\('persist:agent-room'\)/)
+  assert.match(main, /partition: 'persist:agent-room'/)
+  assert.match(main, /sameSite: 'no_restriction'/)
+  assert.match(main, /await setSessionCookie\(state\.sessionToken\)/)
+})
+
+test('desktop reopens a successfully paired workspace rather than returning to setup', async () => {
+  const main = await source('main.mjs')
+  const renderer = await source('renderer/app.mjs')
+  assert.match(main, /pairedWorkspacePath/)
+  assert.match(main, /existsSync\(runtimePaths\(\)\.config\)/)
+  assert.match(renderer, /status\.workspacePath && status\.paired/)
+  assert.match(renderer, /await window\.agentRoom\.openWorkspace\(\)/)
+})

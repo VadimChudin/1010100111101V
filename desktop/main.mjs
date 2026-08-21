@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, session, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, session, shell } from 'electron'
 import { execFile, spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
@@ -223,7 +223,11 @@ function createMainWindow() {
     minHeight: 600,
     backgroundColor: '#090d14',
     title: 'Agent Room',
-    webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true },
+    // The remote Agent Room frontend must use the same persistent Electron
+    // session that receives the Cloud HttpOnly cookie after browser OAuth.
+    // Without this explicit partition, the token was saved successfully but
+    // loaded in a different renderer session, producing Chat 401 responses.
+    webPreferences: { preload: path.join(__dirname, 'preload.cjs'), partition: 'persist:agent-room', contextIsolation: true, nodeIntegration: false, sandbox: true },
   })
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'))
   if (process.env.AGENT_ROOM_SMOKE_BRIDGE === '1') {
@@ -251,7 +255,16 @@ function openWorkspaceInMainWindow() {
 
 ipcMain.handle('desktop:status', async () => {
   const state = await readState()
-  return { connected: Boolean(state.sessionToken), user: state.user || null, workspacePath: state.workspacePath || '', projectSource: state.projectSource || null, version: app.getVersion() }
+  // Migration for users paired before pairedWorkspacePath was introduced:
+  // a verified runtime config plus a saved workspace is proof of completed setup.
+  const paired = Boolean(
+    (state.pairedWorkspacePath && state.pairedWorkspacePath === state.workspacePath)
+    || (state.workspacePath && existsSync(runtimePaths().config)),
+  )
+  if (paired && state.workspacePath && state.pairedWorkspacePath !== state.workspacePath) {
+    await patchState({ pairedWorkspacePath: state.workspacePath })
+  }
+  return { connected: Boolean(state.sessionToken), paired, user: state.user || null, workspacePath: state.workspacePath || '', projectSource: state.projectSource || null, version: app.getVersion() }
 })
 
 ipcMain.handle('desktop:begin-authorization', async () => {
@@ -343,6 +356,7 @@ ipcMain.handle('desktop:install-and-pair', async (_event, payload) => {
   if (!registration.ok) throw new Error(`Device registration failed: ${registration.stderr || registration.stdout}`)
   startDetached(paths.binary, ['serve', '--config', paths.config, '--auto-update'])
   const [serena, graphiti] = await Promise.all([configureSerena(paths, workspacePath), configureGraphiti()])
+  await patchState({ pairedWorkspacePath: workspacePath, pairedAt: new Date().toISOString() })
   return { runtime: 'Registered and synchronizing with verified auto-update.', serena, graphiti }
 })
 
@@ -350,10 +364,11 @@ ipcMain.handle('desktop:open-workspace', () => openWorkspaceInMainWindow())
 ipcMain.handle('desktop:open-diagnostics', async () => shell.openPath(runtimeHome()))
 
 app.whenReady().then(async () => {
+  Menu.setApplicationMenu(null)
   DESKTOP_SESSION = session.fromPartition('persist:agent-room')
-  await createMainWindow()
   const state = await readState()
   if (state.sessionToken) await setSessionCookie(state.sessionToken)
+  await createMainWindow()
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createMainWindow() })
 })
 
